@@ -13,8 +13,9 @@ import sys
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 
 from sim.data import iter_games, load_season, player_names
-from sim.tokenizer import (HITS, STRIKEOUTS, WALKS, Replay, build_vocab,
-                           encode_game, save_vocab)
+from sim.tokenizer import (HITS, STRIKEOUTS, WALKS, Replay, bases_str,
+                           build_vocab, encode_game, has_voided_pitch,
+                           save_vocab)
 
 HERE = os.path.dirname(os.path.abspath(__file__))
 CACHE = os.path.join(HERE, "cache")
@@ -26,9 +27,12 @@ def game_truth(g, names):
     independent side of the round-trip check. Final score comes from the
     last row's post columns (not summed deltas); box lines from the events
     column; per-half runs from per-row score deltas, with between-row jumps
-    credited to the half whose batting side scored."""
+    credited to the half whose batting side scored; per-pitch pre-state
+    straight from the balls/strikes/outs/bases columns."""
     rows = list(g.itertuples(index=False))
     final = (int(rows[-1].post_away_score), int(rows[-1].post_home_score))
+    state = [(int(r.balls), int(r.strikes), int(r.outs_when_up), bases_str(r))
+             for r in rows]
 
     half_runs, half = [], None
     prev = None
@@ -67,7 +71,7 @@ def game_truth(g, names):
         p["bb"] += r.events in WALKS
         b["k"] += r.events in STRIKEOUTS
         p["k"] += r.events in STRIKEOUTS
-    return final, half_runs, bat, arm
+    return final, half_runs, bat, arm, state
 
 
 def cmd_tokenize(args):
@@ -76,18 +80,26 @@ def cmd_tokenize(args):
     names = player_names(df, os.path.join(CACHE, "players.json"))
 
     all_tokens, lengths, failures = [], [], []
+    waived = {"per-pitch state (voided pitch in source)": []}
     out_path = os.path.join(CACHE, "tokens.jsonl")
     n = 0
     with open(out_path, "w") as out:
         for game_pk, g in iter_games(df):
             tokens = encode_game(g, names)
             replay = Replay(tokens).run()
-            final, half_runs, bat, arm = game_truth(g, names)
+            final, half_runs, bat, arm, state = game_truth(g, names)
 
-            if ((replay.away_score, replay.home_score) != final
-                    or replay.half_runs != half_runs
-                    or dict(replay.bat) != bat
-                    or dict(replay.arm) != arm):
+            scores_ok = ((replay.away_score, replay.home_score) == final
+                         and replay.half_runs == half_runs
+                         and dict(replay.bat) == bat
+                         and dict(replay.arm) == arm)
+            if scores_ok and replay.pitch_state == state:
+                pass
+            elif scores_ok and has_voided_pitch(g):
+                # see has_voided_pitch docstring
+                waived["per-pitch state (voided pitch in source)"].append(
+                    int(game_pk))
+            else:
                 failures.append(int(game_pk))
             row0 = g.iloc[0]
             out.write(json.dumps({
@@ -105,8 +117,12 @@ def cmd_tokenize(args):
 
     import numpy as np
     lengths = np.array(lengths)
-    print(f"Round-trip: {n - len(failures)}/{n} games exact"
+    n_waived = sum(len(v) for v in waived.values())
+    print(f"Round-trip: {n - len(failures) - n_waived}/{n} games exact"
           + (f"  FAILURES: {failures[:5]}" if failures else ""))
+    for reason, pks in waived.items():
+        if pks:
+            print(f"  waived {reason}: {pks}")
     print(f"Tokens/game: mean {lengths.mean():.0f}, "
           f"p95 {np.percentile(lengths, 95):.0f}, max {lengths.max()}")
     print(f"Corpus: {lengths.sum():,} tokens   Vocab: {len(vocab)}")

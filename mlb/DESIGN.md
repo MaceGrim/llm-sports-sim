@@ -50,22 +50,30 @@ Measured on 2024-06-05..11 (90 games, 26,422 pitches; `explore_statcast.py`):
 ## Grammar (implemented in sim/tokenizer.py; round-trips all of 2024)
 
 ```
-[GAME] TEAM:away TEAM:home
+[GAME] TEAM:away TEAM:home PARK:home MONTH:m
 [LINEUP_A] P: x9 batting order        [LINEUP_H] P: x9
 [BENCH_A] / [BENCH_H] P:...           later batters, alphabetical
 [PEN_A] / [PEN_H] P:starter P:...     starter first, relievers alphabetical
 [HALF]                                each half-inning, by count (Top 1, ...)
 per PA:    [PA] P:<pitcher> P:<batter>
-per pitch: T:<type> V:<mph> S:<rpm/100> Z:<zone> R:<description>
-           — the pitcher's choice, then the batter's result
+per pitch: T:<type> V:<mph> S:<rpm/100> PX:<in/3> PZ:<in/3> R:<description>
+           — the pitcher's choice (plate location in 3-inch bins, between
+           the 14-zone grid and raw decimals), then the batter's result
 in play:   BB:<trajectory> EV:<mph/2> LA:<deg/5> SP:<deg/10>
            — contact physics after R:hit_into_play; spray direction from
            the hit coordinates (negative = left field), distance omitted
            as derivable from EV/LA/spray
 final:     E:<events> on the last pitch, "+n" when runs score on the play
+state:     O:<outs on play> B:<bases after, 1st-2nd-3rd> — the transition
+           tokens. B: follows every PA that leaves the half open; O:/B:
+           after a non-final pitch are steals/pickoffs/CS; after [HALF]
+           they encode no-pitch plays on the Manfred runner. Replay
+           tracks count (from R:), outs, and bases, verified against the
+           source state columns on EVERY pitch; extra halves start with
+           the Manfred runner on second (deterministic rule).
 mid-PA:    [NEWP] P:x (pitching change, 58/season) | [NEWB] P:x (PH, 14)
 no-pitch:  [MID] +n  (runs between pitch rows, 54/season)
-inning/half/outs: deterministic -> state machine + channels, never tokens
+inning/half: deterministic -> state machine + channels, never tokens
 ```
 
 One deliberate deviation from the first sketch: a single `P:` namespace
@@ -85,13 +93,16 @@ Open questions, in the order to resolve them:
 2. ~~Names~~ DONE 2026-06-12: pybaseball's playerid_reverse_lookup, cached
    in cache/players.json; five colliding names (two Will Smiths, ...) get an
    ID suffix so one token never means two players.
-3. **Outs/bases for state channels**: grammar v1 carries runs but not
-   baserunner advancement, so the replay can reconstruct score and innings
-   but not outs or base occupancy. Training channels (count, outs, bases)
-   need either advancement tokens (out-delta + post-play base state per PA,
-   from between-row diffs of on_1b/2b/3b and outs_when_up) or channels
-   computed from rows at encode time. Decide when training starts; count
-   (balls/strikes) is already derivable from R: tokens alone.
+3. ~~Outs/bases for state channels~~ DONE 2026-06-12: O:/B: transition
+   tokens derived from between-row diffs of outs_when_up and on_1b/2b/3b;
+   count derived from R: results (ball/strike/foul-below-two rules).
+   Replay-tracked count/outs/bases verified against the source columns on
+   all 711K pitches — 2,426/2,427 games exact, one waiver (746664: a 3-2
+   ball the source voided — count frozen, PA continued). Advancement is
+   now a learned distribution (E:single -> B:110 vs B:101 vs +1 B:100),
+   and conservation (runners + batter = runners' + outs + runs) is
+   sampler-maskable. Manfred runner = replay rule, with O:/B: after
+   [HALF] covering pre-pitch pickoffs/advances of the placed runner.
 4. Pitcher fatigue: pitch count is derivable; `n_thruorder_pitcher` is on-row.
    Channel or token? (Channel, probably — same as score.)
 5. Season scope: start with 2024 (3.0M tokens — between v2's single-season
@@ -117,7 +128,15 @@ Open questions, in the order to resolve them:
   HR is EV:104/LA:25, HR spray peaks at the pull gaps, league four-seam
   median V:94 (real 2024 average: 94.2).
   Tests in tests/test_tokenizer.py (handcrafted grammar sequence + the
-  [MID]-straddle game 747004 pinned). Next: training — reuse v2's EventGPT/
-  KVCache by import, settle open question #3 (outs/bases channels), then
-  the sampler state machine (deal batters from the lineup, force [HALF] at
-  three outs).
+  [MID]-straddle game 747004 pinned).
+- 2026-06-12 (grammar v1.1, per Mason): plate location PX:/PZ: in 3-inch
+  bins replaces the 14-zone token; O:/B: state-transition tokens (open
+  question #3 above); PARK:/MONTH: header conditioning (venue offense +
+  month-as-weather-proxy; PARK = home team, right for all but the few
+  neutral-site games — refine via venue lookup later). **2,426/2,427 exact
+  + 1 waiver**, per-pitch state verified throughout. Tokens: mean 2,440,
+  p95 2,880, max 3,664 (train at max_len 3,712); corpus 5,921,232; vocab
+  1,849. Next: training — reuse v2's EventGPT/KVCache by import; channels
+  now all replay-derivable (score diff, inning, outs, count, bases); then
+  the sampler state machine (deal batters, force [HALF] at three outs,
+  conservation-mask B:).
