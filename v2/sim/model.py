@@ -40,6 +40,11 @@ class Config:
     tied_head: bool = True  # untied (#10): output head decoupled from tok_emb
     lineup_channel: bool = False  # (#10): on-floor five per side, added like
     #                               the other channels (away/home projections)
+    n_seasons: int = 0  # (#7) > 0 enables season conditioning: a global
+    #                     season channel plus per-(token, season) vintage
+    #                     deltas e_tok + delta, zero-init and weight-decayed
+    #                     so a player's vector only forks where seasons
+    #                     genuinely differ
 
 
 def bucketize_channels(channels):
@@ -139,6 +144,12 @@ class EventGPT(nn.Module):
             self.floor_home = nn.Linear(cfg.d_model, cfg.d_model, bias=False)
             nn.init.zeros_(self.floor_away.weight)
             nn.init.zeros_(self.floor_home.weight)
+        if cfg.n_seasons:
+            self.season_emb = nn.Embedding(cfg.n_seasons, cfg.d_model)
+            self.delta_emb = nn.Embedding(cfg.n_seasons * cfg.vocab_size,
+                                          cfg.d_model)
+            nn.init.normal_(self.season_emb.weight, std=0.02)
+            nn.init.zeros_(self.delta_emb.weight)  # vintages start identical
 
         # GPT-style init: PyTorch's default embedding std of 1.0 produces huge
         # initial logits through the tied head.
@@ -148,22 +159,37 @@ class EventGPT(nn.Module):
         if not cfg.tied_head:
             nn.init.normal_(self.head.weight, std=0.02)
 
-    def _floor_vec(self, lineup):
+    def _tok_vec(self, ids, season):
+        """Token embedding plus the per-(token, season) vintage delta.
+        `season` must broadcast against ids; PAD positions get no delta so
+        padding stays the zero vector."""
+        e = self.tok_emb(ids)
+        if self.cfg.n_seasons:
+            d = self.delta_emb(season * self.cfg.vocab_size + ids)
+            e = e + d * (ids != PAD).unsqueeze(-1)
+        return e
+
+    def _floor_vec(self, lineup, season):
         """lineup: (..., 10) vocab ids, away five then home five, PAD where the
         floor is unknown. PAD embeds to the zero vector (padding_idx), so the
         fixed /5 keeps absent players from shifting the mean."""
-        e = self.tok_emb(lineup)
+        e = self._tok_vec(lineup, season[..., None, None]
+                          if season is not None else None)
         return (self.floor_away(e[..., :5, :].sum(-2) / 5)
                 + self.floor_home(e[..., 5:, :].sum(-2) / 5))
 
-    def forward(self, ids, diff, period, clock, poss, targets=None, lineup=None):
+    def forward(self, ids, diff, period, clock, poss, targets=None, lineup=None,
+                season=None):
         B, L = ids.shape
         pos = torch.arange(L, device=ids.device)
-        x = (self.tok_emb(ids) + self.pos_emb(pos)
+        x = (self._tok_vec(ids, season[:, None] if season is not None else None)
+             + self.pos_emb(pos)
              + self.diff_emb(diff) + self.period_emb(period)
              + self.clock_emb(clock) + self.poss_emb(poss))
+        if self.cfg.n_seasons:
+            x = x + self.season_emb(season)[:, None]
         if self.cfg.lineup_channel:
-            x = x + self._floor_vec(lineup)
+            x = x + self._floor_vec(lineup, season)
 
         for block in self.blocks:
             x = block(x)
@@ -175,28 +201,33 @@ class EventGPT(nn.Module):
                                    targets.reshape(-1), ignore_index=PAD)
         return logits, loss
 
-    def embed(self, ids, diff, period, clock, poss, pos, lineup=None):
-        x = (self.tok_emb(ids) + self.pos_emb(pos)
+    def embed(self, ids, diff, period, clock, poss, pos, lineup=None,
+              season=None):
+        x = (self._tok_vec(ids, season[:, None] if season is not None else None)
+             + self.pos_emb(pos)
              + self.diff_emb(diff) + self.period_emb(period)
              + self.clock_emb(clock) + self.poss_emb(poss))
+        if self.cfg.n_seasons:
+            x = x + self.season_emb(season)[:, None]
         if self.cfg.lineup_channel:
-            x = x + self._floor_vec(lineup)
+            x = x + self._floor_vec(lineup, season)
         return x
 
-    def prime(self, ids, diff, period, clock, poss, cache: KVCache, lineup=None):
+    def prime(self, ids, diff, period, clock, poss, cache: KVCache, lineup=None,
+              season=None):
         """Run a (right-padded) prefix once, filling the cache from position 0.
         Padding keys enter the cache but are masked off by key_valid in step()."""
         pos = torch.arange(ids.shape[1], device=ids.device)
-        x = self.embed(ids, diff, period, clock, poss, pos, lineup)
+        x = self.embed(ids, diff, period, clock, poss, pos, lineup, season)
         for i, block in enumerate(self.blocks):
             x = block(x, cache=cache, layer=i)
         cache.t += ids.shape[1]
         return self.head(self.ln_f(x))
 
     def step(self, ids, diff, period, clock, poss, pos, cache: KVCache, key_valid,
-             lineup=None):
+             lineup=None, season=None):
         """One generation step: ids is (B, 1). Returns next-token logits."""
-        x = self.embed(ids, diff, period, clock, poss, pos, lineup)
+        x = self.embed(ids, diff, period, clock, poss, pos, lineup, season)
         for i, block in enumerate(self.blocks):
             x = block(x, cache=cache, layer=i, key_valid=key_valid)
         cache.t += 1

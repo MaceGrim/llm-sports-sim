@@ -363,7 +363,7 @@ class GameState:
 @torch.no_grad()
 def generate_games(model, vocab: List[str], headers: List[List[str]], device: str,
                    seed: int = 0, temperature: float = 1.0,
-                   max_len: int = 3300) -> List[List[str]]:
+                   max_len: int = 3300, seasons: List[int] = None) -> List[List[str]]:
     """Generate a batch of games in lockstep with KV caching.
 
     Every game appends exactly one token per step (forced or sampled), so a
@@ -409,6 +409,11 @@ def generate_games(model, vocab: List[str], headers: List[List[str]], device: st
         lineup = torch.zeros((B, Lp, 10), dtype=torch.long, device=device)
         for i, f in enumerate(floors):
             lineup[i, :len(f)] = torch.tensor(f)
+    season = None
+    if getattr(model.cfg, "n_seasons", 0):
+        if seasons is None:
+            raise ValueError("model is season-conditioned: pass seasons=")
+        season = torch.tensor(seasons, device=device)
 
     autocast = torch.autocast(device, dtype=torch.bfloat16, enabled=device == "cuda")
     model.eval()
@@ -416,7 +421,7 @@ def generate_games(model, vocab: List[str], headers: List[List[str]], device: st
                     torch.bfloat16 if device == "cuda" else torch.float32)
     with autocast:
         logits_all = model.prime(ids, diff, period, clock, poss, cache,
-                                 lineup=lineup)
+                                 lineup=lineup, season=season)
     lengths = [len(t) for t in tokens]
     last_logits = torch.stack([logits_all[i, lengths[i] - 1] for i in range(B)])
     key_valid = torch.zeros((B, Lp), dtype=torch.bool, device=device)
@@ -477,16 +482,21 @@ def generate_games(model, vocab: List[str], headers: List[List[str]], device: st
             last_logits = model.step(
                 ids, d[:, None].to(device), p[:, None].to(device),
                 c[:, None].to(device), po[:, None].to(device),
-                pos, cache, key_valid, lineup=step_lineup)
+                pos, cache, key_valid, lineup=step_lineup, season=season)
     return tokens
 
 
 @torch.no_grad()
 def generate_game(model, vocab: List[str], header: List[str], device: str,
                   seed: int = 0, temperature: float = 1.0,
-                  max_len: int = 3300) -> List[str]:
+                  max_len: int = 3300, season: int = None) -> List[str]:
     """Condition on a real header (teams, rosters, Q1 starters); generate the rest."""
     ts = TokenSets(vocab)
+    season_t = None
+    if getattr(model.cfg, "n_seasons", 0):
+        if season is None:
+            raise ValueError("model is season-conditioned: pass season=")
+        season_t = torch.tensor([season], device=device)
     h = header.index("[ROSTER_H]")
     away_roster = [t[2:] for t in header[4:h] if t.startswith("P:")]
     home_roster = [t[2:] for t in header[h + 1:] if t.startswith("P:")]
@@ -518,7 +528,8 @@ def generate_game(model, vocab: List[str], header: List[str], device: str,
             with autocast:
                 logits, _ = model(ids, diff[None].to(device),
                                   period[None].to(device), clock[None].to(device),
-                                  poss[None].to(device), lineup=lineup)
+                                  poss[None].to(device), lineup=lineup,
+                                  season=season_t)
             row = logits[0, -1].float().cpu() / temp_of(legal)
             mask = torch.full_like(row, float("-inf"))
             mask[legal] = 0.0

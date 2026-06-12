@@ -39,6 +39,16 @@ def season_start(date: str) -> str:
     return f"{year}-08-01"
 
 
+# Seasons in the corpus, by season-start year (2023-24 was never acquired).
+SEASONS = ["2018", "2019", "2020", "2021", "2022", "2024"]
+
+
+def season_index(date: str) -> int:
+    """Model season index for a game date; raises on seasons not in the corpus
+    so an unmapped date can never silently train as the wrong vintage."""
+    return SEASONS.index(season_start(date)[:4])
+
+
 def team_form(games: List[Game], team: str, before_date: str, last_n_players: int = 9) -> Optional[TeamForm]:
     """Compute a team's form from its games in the same season, strictly
     before before_date.
