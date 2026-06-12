@@ -22,6 +22,7 @@ import math
 import os
 import sys
 import time
+from collections import defaultdict
 
 import numpy as np
 import torch
@@ -41,6 +42,7 @@ def main():
     p = argparse.ArgumentParser()
     p.add_argument("--games", type=int, default=48)
     p.add_argument("--sims", type=int, default=50)
+    p.add_argument("--batch", type=int, default=128)
     p.add_argument("--seed", type=int, default=0)
     p.add_argument("--temps-out", default="1.0,0.9,0.8")
     p.add_argument("--temps-act", default="1.0,0.9,0.8")
@@ -65,21 +67,33 @@ def main():
 
     grid = [(o, a) for o in map(float, args.temps_out.split(","))
             for a in map(float, args.temps_act.split(","))]
+
+    # Flat job list: games interleaved into full-size batches so the GPU
+    # always runs at args.batch, instead of one under-sized batch per game.
+    jobs, actuals = [], []
+    for gi, g in enumerate(dev):
+        toks = g["tokens"]
+        header = toks[:toks.index("[START_Q]") + 11]
+        jobs.extend((gi, header) for _ in range(args.sims))
+        real = Replay(toks).run()
+        actuals.append(real.home_score - real.away_score)
+
     results = []
     for o, a in grid:
         temps = {"outcome": o, "action": a}
-        cov, sds, briers, maes = [], [], [], []
+        by_game = defaultdict(list)
         t0 = time.time()
-        for k, g in enumerate(dev):
-            toks = g["tokens"]
-            header = toks[:toks.index("[START_Q]") + 11]
-            sims = generate_games(model, vocab, [header] * args.sims, device,
-                                  seed=args.seed + k * 10_000, temperature=temps)
-            margins = np.array([
-                (lambda r: r.home_score - r.away_score)(Replay(s).run())
-                for s in sims if s[-1] == "[EOG]"])
-            real = Replay(toks).run()
-            actual = real.home_score - real.away_score
+        for s in range(0, len(jobs), args.batch):
+            chunk = jobs[s:s + args.batch]
+            sims = generate_games(model, vocab, [h for _, h in chunk], device,
+                                  seed=args.seed + s, temperature=temps)
+            for (gi, _), sim in zip(chunk, sims):
+                if sim[-1] == "[EOG]":
+                    r = Replay(sim).run()
+                    by_game[gi].append(r.home_score - r.away_score)
+        cov, sds, briers, maes = [], [], [], []
+        for gi, actual in enumerate(actuals):
+            margins = np.array(by_game[gi])
             cov.append(np.percentile(margins, 10) <= actual
                        <= np.percentile(margins, 90))
             sds.append(margins.std(ddof=1))
