@@ -19,9 +19,16 @@ those sections are alphabetical (v2's roster-ordering principle):
                                     Top 1, Bot 1, Top 2, ... (a skipped
                                     bottom half only ever ends the game)
     [PA] P:pitcher P:batter
-    T:FF Z:5 R:called_strike        one triple per pitch (T:unk Z:unk when
-                                    untracked: pitch-clock violations, the
-                                    odd lost reading)
+    T:FF V:94 S:2200 Z:5            one pitch: the pitcher's choice — type,
+    R:called_strike                 velocity (1 mph), spin (100 rpm), target
+                                    zone — then the batter's result (:unk
+                                    when untracked: pitch-clock violations,
+                                    the odd lost reading)
+    BB:fly_ball EV:98 LA:25 SP:-10  contact physics after R:hit_into_play —
+                                    trajectory, exit velo (2 mph), launch
+                                    angle (5 deg), spray direction (10 deg,
+                                    negative = left field; distance is
+                                    omitted as derivable physics)
     E:strikeout                     PA outcome, on the final pitch only
     +1 .. +4                        runs scored on the play, after R:/E:
     [NEWP] P:name | [NEWB] P:name   mid-PA pitching change / pinch hitter
@@ -47,6 +54,7 @@ over event labels — the principle that resolved every v2 quirk):
 """
 
 import json
+import math
 from collections import defaultdict
 from typing import Dict, List
 
@@ -68,9 +76,36 @@ EVENTS = {"field_out", "strikeout", "single", "walk", "double", "home_run",
           "fielders_choice_out", "strikeout_double_play", "catcher_interf",
           "sac_fly_double_play", "triple_play"}
 
+BB_TYPES = {"ground_ball", "fly_ball", "line_drive", "popup"}
+
 HITS = {"single", "double", "triple", "home_run"}
 WALKS = {"walk", "intent_walk"}
 STRIKEOUTS = {"strikeout", "strikeout_double_play"}
+
+# Numeric token ranges: (prefix, lo, hi, step). Values bucket to
+# prefix:floor(v/step)*step within [lo, hi); the tails are prefix:lo-
+# (below) and prefix:hi+ (at or above), v2's D:36+ pattern. Bounds chosen
+# from the 2024 distributions with room for outliers.
+RANGES = {"V": (60, 106, 1), "S": (1000, 3600, 100),
+          "EV": (30, 120, 2), "LA": (-90, 90, 5), "SP": (-90, 90, 10)}
+
+
+def bucket(prefix: str, value) -> str:
+    lo, hi, step = RANGES[prefix]
+    if pd.isna(value):
+        return f"{prefix}:unk"
+    if value < lo:
+        return f"{prefix}:{lo}-"
+    if value >= hi:
+        return f"{prefix}:{hi}+"
+    return f"{prefix}:{int(value // step) * step}"
+
+
+def spray_degrees(hc_x, hc_y) -> float:
+    """Spray direction from Statcast hit coordinates: 0 = straightaway
+    center, negative = left field. Home plate is at (125.42, 198.27) in
+    the coordinate frame Baseball Savant uses."""
+    return math.degrees(math.atan2(hc_x - 125.42, 198.27 - hc_y))
 
 
 def encode_game(g: pd.DataFrame, names: Dict[int, str]) -> List[str]:
@@ -151,7 +186,17 @@ def encode_game(g: pd.DataFrame, names: Dict[int, str]) -> List[str]:
         zone = f"Z:{int(r.zone)}" if pd.notna(r.zone) else "Z:unk"
         if r.description not in DESCRIPTIONS:
             raise ValueError(f"unseen description {r.description!r}")
-        tokens += [f"T:{ptype}", zone, f"R:{r.description}"]
+        tokens += [f"T:{ptype}", bucket("V", r.release_speed),
+                   bucket("S", r.release_spin_rate), zone,
+                   f"R:{r.description}"]
+        if r.description == "hit_into_play":
+            bb = str(r.bb_type) if pd.notna(r.bb_type) else "unk"
+            if bb != "unk" and bb not in BB_TYPES:
+                raise ValueError(f"unseen bb_type {bb!r}")
+            spray = (spray_degrees(r.hc_x, r.hc_y)
+                     if pd.notna(r.hc_x) and pd.notna(r.hc_y) else None)
+            tokens += [f"BB:{bb}", bucket("EV", r.launch_speed),
+                       bucket("LA", r.launch_angle), bucket("SP", spray)]
         if pd.notna(r.events):
             if r.events not in EVENTS:
                 raise ValueError(f"unseen events {r.events!r}")
@@ -210,7 +255,13 @@ class Replay:
                 self._score(int(t[i + 1]))
                 i += 2
             elif tok.startswith("T:"):
-                i += 3  # T: Z: R:
+                hit_into_play = t[i + 4] == "R:hit_into_play"
+                i += 5  # T: V: S: Z: R:
+                if hit_into_play:
+                    if not t[i].startswith("BB:"):
+                        raise ValueError(f"ball in play without contact "
+                                         f"tokens at {t[i]!r}")
+                    i += 4  # BB: EV: LA: SP:
                 if t[i].startswith("E:"):
                     self._outcome(t[i][2:], batter, pitcher)
                     i += 1
@@ -258,7 +309,11 @@ def build_vocab(token_lists) -> List[str]:
     seen.update(f"Z:{z}" for z in range(1, 15))
     seen.update(f"+{n}" for n in range(1, 5))
     seen.update(f"T:{p}" for p in PITCH_TYPES)
-    seen.update(["T:unk", "Z:unk"])
+    seen.update(f"BB:{b}" for b in BB_TYPES)
+    seen.update(["T:unk", "Z:unk", "BB:unk"])
+    for prefix, (lo, hi, step) in RANGES.items():
+        seen.update(f"{prefix}:{v}" for v in range(lo, hi, step))
+        seen.update([f"{prefix}:{lo}-", f"{prefix}:{hi}+", f"{prefix}:unk"])
 
     specials = ["[PAD]", "[GAME]", "[LINEUP_A]", "[LINEUP_H]", "[BENCH_A]",
                 "[BENCH_H]", "[PEN_A]", "[PEN_H]", "[HALF]", "[PA]",
