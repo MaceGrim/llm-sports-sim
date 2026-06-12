@@ -1,4 +1,9 @@
-"""Team and player form computed strictly from games BEFORE a cutoff date (no leakage)."""
+"""Team and player form computed strictly from games BEFORE a cutoff date (no leakage).
+
+Form is season-scoped: with the multi-season cache, "season-to-date" would
+otherwise silently become career-since-2018 averages (rosters and scoring
+environment shift too much across seasons for those to mean anything).
+"""
 
 from dataclasses import dataclass, field
 from typing import Dict, List, Optional
@@ -28,15 +33,26 @@ class TeamForm:
     players: List[PlayerForm]  # sorted by minutes per game, descending
 
 
-def team_form(games: List[Game], team: str, before_date: str, last_n_players: int = 9) -> Optional[TeamForm]:
-    """Compute a team's form from all its games strictly before before_date.
+def season_start(date: str) -> str:
+    """First day of the NBA season containing `date` (Aug 1 boundary)."""
+    year = int(date[:4]) - (date[5:7] < "08")
+    return f"{year}-08-01"
 
-    Returns None if the team has no prior games. `games` must be date-sorted.
+
+def team_form(games: List[Game], team: str, before_date: str, last_n_players: int = 9) -> Optional[TeamForm]:
+    """Compute a team's form from its games in the same season, strictly
+    before before_date.
+
+    Returns None if the team has no prior games this season. `games` must be
+    date-sorted.
     """
     scored, allowed, results = [], [], []
     player_totals: Dict[str, dict] = {}
 
+    start = season_start(before_date)
     for g in games:
+        if g.date < start:
+            continue
         if g.date >= before_date:
             break
         if team == g.home:
@@ -90,9 +106,13 @@ def team_form(games: List[Game], team: str, before_date: str, last_n_players: in
 
 
 def league_scoring(games: List[Game], before_date: str) -> dict:
-    """League-wide per-team scoring mean and std before a date (for simulation noise)."""
+    """League-wide per-team scoring mean and std, same season, before a date
+    (for simulation noise)."""
     totals = []
+    start = season_start(before_date)
     for g in games:
+        if g.date < start:
+            continue
         if g.date >= before_date:
             break
         totals.extend([g.home_score, g.away_score])
