@@ -28,9 +28,9 @@ from sim.tokenizer import Replay, load_vocab
 HERE = os.path.dirname(os.path.abspath(__file__))
 
 
-def load_dataset(val_cutoff: str):
+def load_dataset(val_cutoff: str, lineup_channel: bool = False):
     """Tokenized games -> (train, val) lists of
-    (ids, diff, period, clock, given, blocked_players)."""
+    (ids, diff, period, clock, given, blocked_players[, lineups])."""
     vocab = load_vocab(os.path.join(HERE, "cache", "vocab.json"))
     index = {tok: i for i, tok in enumerate(vocab)}
     is_player = torch.tensor([t.startswith("P:") for t in vocab])
@@ -43,7 +43,8 @@ def load_dataset(val_cutoff: str):
                 continue
             tokens = g["tokens"]
             ids = torch.tensor([index[t] for t in tokens])
-            channels = bucketize_channels(Replay(tokens).run().channels)
+            replay = Replay(tokens).run()
+            channels = bucketize_channels(replay.channels)
             # Rosters and Q1 starters are user INPUTS at simulation time, never
             # predicted. Grading the model on reciting them turns the player
             # embeddings into team-membership tables (probed: teammate@10=0.94).
@@ -57,6 +58,10 @@ def load_dataset(val_cutoff: str):
             blocked = is_player.clone()
             blocked[roster] = False
             example = (ids, *channels, given, blocked)
+            if lineup_channel:  # int16 keeps ~16M tokens x 10 ids in RAM
+                example += (torch.tensor(
+                    [[index["P:" + p] if p else PAD for p in row]
+                     for row in replay.lineups], dtype=torch.int16),)
             (train if g["date"] < val_cutoff else val).append(example)
     return vocab, train, val
 
@@ -81,7 +86,13 @@ def make_batch(examples, device):
     for i, example in enumerate(examples):
         targets[i, :example[5] - 1] = PAD  # conditioning, not prediction
     blocked = torch.stack([e[6] for e in examples]).to(device)
-    return ids, diff, period, clock, poss, targets, blocked
+    lineup = None
+    if len(examples[0]) > 7:
+        lineup = torch.full((len(examples), L, 10), PAD)
+        for i, example in enumerate(examples):
+            lineup[i, :len(example[7])] = example[7].long()
+        lineup = lineup.to(device)
+    return ids, diff, period, clock, poss, targets, blocked, lineup
 
 
 @torch.no_grad()
@@ -94,9 +105,9 @@ def evaluate(model, val, vocab, device, batch_size, max_games=24):
     model.eval()
     sums = {"all": [0.0, 0], "actor": [0.0, 0], "outcome": [0.0, 0], "dt": [0.0, 0]}
     for start in range(0, min(len(val), max_games), batch_size):
-        ids, diff, period, clock, poss, targets, blocked = make_batch(
+        ids, diff, period, clock, poss, targets, blocked, lineup = make_batch(
             val[start:start + batch_size], device)
-        logits, _ = model(ids, diff, period, clock, poss)
+        logits, _ = model(ids, diff, period, clock, poss, lineup=lineup)
         logits = mask_illegal_players(logits, targets, blocked, is_player)
         losses = torch.nn.functional.cross_entropy(
             logits.reshape(-1, len(vocab)), targets.reshape(-1),
@@ -121,25 +132,39 @@ def main():
     p.add_argument("--val-cutoff", default="2023-03-01")
     p.add_argument("--val-every", type=int, default=250)
     p.add_argument("--seed", type=int, default=0)
+    p.add_argument("--lineup-channel", action="store_true",
+                   help="add the on-floor-five channel (#10)")
+    p.add_argument("--untied-head", action="store_true",
+                   help="decouple the output head from tok_emb (#10)")
     p.add_argument("--smoke", action="store_true", help="tiny model, 60 steps")
+    p.add_argument("--out", default="",
+                   help="checkpoint path (default cache/model.pt; smoke runs "
+                        "go to cache/model_smoke.pt so they can never clobber "
+                        "the production checkpoint)")
     args = p.parse_args()
 
     if args.smoke:
         args.steps, args.batch = 60, 4
         args.d_model, args.n_layer, args.n_head = 64, 2, 4
         args.val_every = 30
+    if not args.out:
+        args.out = os.path.join(
+            HERE, "cache", "model_smoke.pt" if args.smoke else "model.pt")
 
     torch.manual_seed(args.seed)
     rng = np.random.default_rng(args.seed)
     device = pick_device()
 
-    vocab, train, val = load_dataset(args.val_cutoff)
+    vocab, train, val = load_dataset(args.val_cutoff,
+                                     lineup_channel=args.lineup_channel)
     is_player = torch.tensor([t.startswith("P:") for t in vocab], device=device)
     print(f"device={device}  train={len(train)} games  val={len(val)} games  "
           f"vocab={len(vocab)}")
 
     cfg = Config(vocab_size=len(vocab), d_model=args.d_model,
-                 n_layer=args.n_layer, n_head=args.n_head)
+                 n_layer=args.n_layer, n_head=args.n_head,
+                 tied_head=not args.untied_head,
+                 lineup_channel=args.lineup_channel)
     model = EventGPT(cfg).to(device)
     print(f"model: {model.num_params() / 1e6:.1f}M params")
 
@@ -151,13 +176,13 @@ def main():
 
     t0 = time.time()
     best_val = float("inf")
-    out = os.path.join(HERE, "cache", "model.pt")
+    out = args.out
     for step in range(1, args.steps + 1):
         picks = rng.choice(len(train), size=args.batch, replace=False)
-        ids, diff, period, clock, poss, targets, blocked = make_batch(
+        ids, diff, period, clock, poss, targets, blocked, lineup = make_batch(
             [train[i] for i in picks], device)
         with autocast:
-            logits, _ = model(ids, diff, period, clock, poss)
+            logits, _ = model(ids, diff, period, clock, poss, lineup=lineup)
             logits = mask_illegal_players(logits, targets, blocked, is_player)
             loss = torch.nn.functional.cross_entropy(
                 logits.reshape(-1, len(vocab)), targets.reshape(-1),
