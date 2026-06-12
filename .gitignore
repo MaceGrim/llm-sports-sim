@@ -1,0 +1,14 @@
+# Licensed data (BigDataBall) — never commit or redistribute; see TODO.md
+nba_data/
+
+# Derived artifacts (rebuildable from data)
+v2/cache/
+v2/results/
+*.pt
+
+# Statcast pulls (public data, but bulky and re-fetchable via pybaseball)
+mlb/*.parquet
+
+__pycache__/
+*.pyc
+.pytest_cache/
