@@ -1,0 +1,30 @@
+{
+  "models": ["gpt-3.5-turbo", "gpt-4"],
+  "data_dir": "nba_data",
+  "num_games": 20,
+  "prompt_strategy": "detailed",
+  "output_dir": "results",
+  "seed": 42,
+  "custom_models": {
+    "local_llama": {
+      "name": "local_llama",
+      "model_type": "huggingface",
+      "model_name": "meta-llama/Llama-2-7b-chat-hf",
+      "max_tokens": 1500,
+      "temperature": 0.7
+    },
+    "ollama_mistral": {
+      "name": "ollama_mistral", 
+      "model_type": "ollama",
+      "model_name": "mistral",
+      "base_url": "http://localhost:11434"
+    }
+  },
+  "evaluation_settings": {
+    "basketball_rules": {
+      "min_team_score": 70,
+      "max_team_score": 150,
+      "typical_total_score_range": [140, 240]
+    }
+  }
+}
