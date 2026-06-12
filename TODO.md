@@ -135,6 +135,37 @@ results/backtest_transformer_2025-03-01_s50.json + gate_b.py):**
   Checkpoint backup at cache/model_6x_19k.pt; new run writes
   cache/model_v3.pt.
 
+**Round 2 verdicts (2026-06-12, model_v3 = #10 levers + the dt-token
+state-alignment fix in the sampler, backtest_transformer_..._s50_v3.json):**
+- The lineup channel surfaced a LONG-STANDING sampler bug: generation
+  embedded every dt: token with the previous event's channel snapshot
+  (~18% of tokens stale, e.g. Q2's first event saw period=1 clock=0:00).
+  Fixed in sim/sample.py (push dt: first); train/generate now align
+  exactly (0 lineup, ~1 channel mismatch per game = the final EOG).
+- Transformer row: 61.5% picks / 0.2292 Brier / 0.6483 log loss / 12.6
+  margin MAE / coverage 80.2% / sim sd 17.1 (real 16.7).
+- **Gate A: PASS** — coverage 80.2 in [76, 84]; sd 17.1 within 10% of
+  16.7. The "structural" over-dispersion was substantially the sampler
+  bug + levers.
+- **Gate B: FAIL on Brier only** — MAE component passes (12.57 <= 12.76,
+  and beats the player baseline's 12.95). Paired: vs player-form +0.0175
+  [-0.0037, +0.0383] (no longer significantly worse); vs team-form
+  +0.0048 (tied). Embedding probes: teammate@10 0.035 (= chance floor
+  0.032, was 0.098), style@10 0.093 (held) — Gate C probe component PASS.
+- **Diagnosis of the remaining Brier gap** (not estimator, not sim
+  noise): predicted-margin shrinkage is JUSTIFIED — corr(mu, actual) is
+  0.310 vs the player baseline's 0.447; rescaling mu only hurts (k=1.0
+  optimal). The model extracts less team-strength signal from rosters
+  than season-to-date scoring does, and a key structural reason is that
+  player embeddings are SEASON-BLIND: one "Luka Doncic" vector averages
+  2018-rookie and 2024-MVP vintages, while the baseline reads this
+  season's numbers. **#7 season conditioning is therefore promoted from
+  cross-era feature to Gate B lever** (design settled in DESIGN.md /
+  mlb/DESIGN.md 4b: global season channel + per-player vintage deltas,
+  weight-decayed). Secondary option after #7: final retrain at
+  --val-cutoff 2025-03-01 (train on dev too once tuning is frozen, one
+  val evaluation).
+
 ## Evaluation / product
 
 14. **The proper backtest**: transformer vs StatisticalSimulator, same protocol
