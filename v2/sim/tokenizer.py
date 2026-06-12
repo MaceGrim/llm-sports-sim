@@ -303,6 +303,9 @@ class Replay:
         self.poss = 0  # possession channel: 0 unknown, 1 away, 2 home
         self.box = defaultdict(lambda: {"pts": 0, "reb": 0, "ast": 0, "sec": 0})
         self.channels: List[Tuple[int, int, int]] = []
+        # Per-token on-floor lineup (away five then home five, "" while the
+        # floor is unknown), same state-BEFORE convention as channels.
+        self.lineups: List[Tuple[str, ...]] = []
         self._bucket_open = False  # True between [END_Q] and the next [START_Q]
 
     def run(self) -> "Replay":
@@ -335,6 +338,7 @@ class Replay:
         # on a shot's tokens would already contain the made basket).
         state_before = (self.home_score - self.away_score, self.period,
                         self.clock, self.poss)
+        floor_before = self._floor()
         dt = int(t[i].split(":")[1])
         i += 1
         head = t[i]
@@ -380,7 +384,7 @@ class Replay:
         self.clock -= dt
         if self.tokens[start + 1] == "[END_Q]" and self.clock != 0:
             raise ValueError(f"period {self.period} ended with {self.clock}s left")
-        self._mark(i - start, state_before)
+        self._mark(i - start, state_before, floor_before)
         return i
 
     def _actor_event(self, i: int) -> int:
@@ -436,12 +440,18 @@ class Replay:
             self.home_score += points
             self.period_scores[-1][1] += points
 
-    def _mark(self, n: int, state=None):
+    def _floor(self) -> Tuple[str, ...]:
+        away = sorted(p for p, s in self.on_floor.items() if s == "away")
+        home = sorted(p for p, s in self.on_floor.items() if s == "home")
+        return tuple((away + [""] * 5)[:5] + (home + [""] * 5)[:5])
+
+    def _mark(self, n: int, state=None, floor=None):
         """Record state channels for the n tokens just consumed."""
         if state is None:
             state = (self.home_score - self.away_score, self.period,
                      self.clock, self.poss)
         self.channels += [state] * n
+        self.lineups += [floor if floor is not None else self._floor()] * n
 
     # -- results ------------------------------------------------------------
 

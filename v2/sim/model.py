@@ -37,6 +37,9 @@ class Config:
     n_layer: int = 6
     max_len: int = 3328  # longest game across six seasons is 3,124 tokens (4OT)
     dropout: float = 0.1
+    tied_head: bool = True  # untied (#10): output head decoupled from tok_emb
+    lineup_channel: bool = False  # (#10): on-floor five per side, added like
+    #                               the other channels (away/home projections)
 
 
 def bucketize_channels(channels):
@@ -127,20 +130,40 @@ class EventGPT(nn.Module):
         self.blocks = nn.ModuleList(Block(cfg) for _ in range(cfg.n_layer))
         self.ln_f = nn.LayerNorm(cfg.d_model)
         self.head = nn.Linear(cfg.d_model, cfg.vocab_size, bias=False)
-        self.head.weight = self.tok_emb.weight  # weight tying
+        if cfg.tied_head:
+            self.head.weight = self.tok_emb.weight  # weight tying
+        if cfg.lineup_channel:
+            # Zero-init so the channel starts as a no-op and training decides
+            # how much on-floor context to inject.
+            self.floor_away = nn.Linear(cfg.d_model, cfg.d_model, bias=False)
+            self.floor_home = nn.Linear(cfg.d_model, cfg.d_model, bias=False)
+            nn.init.zeros_(self.floor_away.weight)
+            nn.init.zeros_(self.floor_home.weight)
 
         # GPT-style init: PyTorch's default embedding std of 1.0 produces huge
         # initial logits through the tied head.
         for emb in (self.tok_emb, self.pos_emb, self.diff_emb,
                     self.period_emb, self.clock_emb, self.poss_emb):
             nn.init.normal_(emb.weight, std=0.02)
+        if not cfg.tied_head:
+            nn.init.normal_(self.head.weight, std=0.02)
 
-    def forward(self, ids, diff, period, clock, poss, targets=None):
+    def _floor_vec(self, lineup):
+        """lineup: (..., 10) vocab ids, away five then home five, PAD where the
+        floor is unknown. PAD embeds to the zero vector (padding_idx), so the
+        fixed /5 keeps absent players from shifting the mean."""
+        e = self.tok_emb(lineup)
+        return (self.floor_away(e[..., :5, :].sum(-2) / 5)
+                + self.floor_home(e[..., 5:, :].sum(-2) / 5))
+
+    def forward(self, ids, diff, period, clock, poss, targets=None, lineup=None):
         B, L = ids.shape
         pos = torch.arange(L, device=ids.device)
         x = (self.tok_emb(ids) + self.pos_emb(pos)
              + self.diff_emb(diff) + self.period_emb(period)
              + self.clock_emb(clock) + self.poss_emb(poss))
+        if self.cfg.lineup_channel:
+            x = x + self._floor_vec(lineup)
 
         for block in self.blocks:
             x = block(x)
@@ -152,24 +175,28 @@ class EventGPT(nn.Module):
                                    targets.reshape(-1), ignore_index=PAD)
         return logits, loss
 
-    def embed(self, ids, diff, period, clock, poss, pos):
-        return (self.tok_emb(ids) + self.pos_emb(pos)
-                + self.diff_emb(diff) + self.period_emb(period)
-                + self.clock_emb(clock) + self.poss_emb(poss))
+    def embed(self, ids, diff, period, clock, poss, pos, lineup=None):
+        x = (self.tok_emb(ids) + self.pos_emb(pos)
+             + self.diff_emb(diff) + self.period_emb(period)
+             + self.clock_emb(clock) + self.poss_emb(poss))
+        if self.cfg.lineup_channel:
+            x = x + self._floor_vec(lineup)
+        return x
 
-    def prime(self, ids, diff, period, clock, poss, cache: KVCache):
+    def prime(self, ids, diff, period, clock, poss, cache: KVCache, lineup=None):
         """Run a (right-padded) prefix once, filling the cache from position 0.
         Padding keys enter the cache but are masked off by key_valid in step()."""
         pos = torch.arange(ids.shape[1], device=ids.device)
-        x = self.embed(ids, diff, period, clock, poss, pos)
+        x = self.embed(ids, diff, period, clock, poss, pos, lineup)
         for i, block in enumerate(self.blocks):
             x = block(x, cache=cache, layer=i)
         cache.t += ids.shape[1]
         return self.head(self.ln_f(x))
 
-    def step(self, ids, diff, period, clock, poss, pos, cache: KVCache, key_valid):
+    def step(self, ids, diff, period, clock, poss, pos, cache: KVCache, key_valid,
+             lineup=None):
         """One generation step: ids is (B, 1). Returns next-token logits."""
-        x = self.embed(ids, diff, period, clock, poss, pos)
+        x = self.embed(ids, diff, period, clock, poss, pos, lineup)
         for i, block in enumerate(self.blocks):
             x = block(x, cache=cache, layer=i, key_valid=key_valid)
         cache.t += 1

@@ -109,6 +109,7 @@ class GameState:
         self.tech_armed = 0  # technical FTs available (any on-floor shooter)
         self.poss = 0  # 0 unknown, 1 away, 2 home — same convention as Replay
         self._channel = (0, 0, 0, 0)  # state at current event start
+        self._floor_snap = [0] * 10  # on-floor ids at current event start
 
     # -- helpers -------------------------------------------------------------
 
@@ -124,6 +125,11 @@ class GameState:
 
     def channel(self):
         return self._channel
+
+    def floor_ids(self) -> List[int]:
+        """On-floor vocab ids (away five then home five, PAD-padded), same
+        event-start snapshot convention as channel()."""
+        return self._floor_snap
 
     # -- legality ------------------------------------------------------------
 
@@ -222,6 +228,12 @@ class GameState:
         if tok.startswith("dt:"):
             self._channel = (self.score["home"] - self.score["away"],
                              self.period, self.clock, self.poss)
+            away = sorted(p for p, s in self.on_floor.items() if s == "away")
+            home = sorted(p for p, s in self.on_floor.items() if s == "home")
+            self._floor_snap = ([self.ts.player_id[p] for p in away[:5]]
+                                + [0] * (5 - min(len(away), 5))
+                                + [self.ts.player_id[p] for p in home[:5]]
+                                + [0] * (5 - min(len(home), 5)))
             dt = int(tok[3:])
             self.clock -= dt
             self.zero_clock_events += 1 if self.clock == 0 and dt == 0 else 0
@@ -361,20 +373,23 @@ def generate_games(model, vocab: List[str], headers: List[List[str]], device: st
     """
     ts = TokenSets(vocab)
     B = len(headers)
-    states, tokens, channels = [], [], []
+    use_lineup = getattr(model.cfg, "lineup_channel", False)
+    states, tokens, channels, floors = [], [], [], []
     for header in headers:
         h = header.index("[ROSTER_H]")
         away = [t[2:] for t in header[4:h] if t.startswith("P:")]
         home = [t[2:] for t in header[h + 1:] if t.startswith("P:")]
         st = GameState(ts, away, home)
-        chans = []
+        chans, flrs = [], []
         for tok in header:
             chans.append(st.channel())
+            flrs.append(st.floor_ids())
             if tok.startswith(("dt:", "[START_Q]")) or st.expect == "lineup":
                 st.push(tok)
         states.append(st)
         tokens.append(list(header))
         channels.append(chans)
+        floors.append(flrs)
 
     def tensors(rows, pad_to=None):
         L = pad_to or max(len(r) for r in rows)
@@ -389,12 +404,19 @@ def generate_games(model, vocab: List[str], headers: List[List[str]], device: st
     chan = [bucketize_channels(c + [(0, 0, 0, 0)] * (Lp - len(c))) for c in channels]
     diff, period, clock, poss = (torch.stack([c[k] for c in chan]).to(device)
                                  for k in range(4))
+    lineup = None
+    if use_lineup:
+        lineup = torch.zeros((B, Lp, 10), dtype=torch.long, device=device)
+        for i, f in enumerate(floors):
+            lineup[i, :len(f)] = torch.tensor(f)
+
     autocast = torch.autocast(device, dtype=torch.bfloat16, enabled=device == "cuda")
     model.eval()
     cache = KVCache(model.cfg, B, device,
                     torch.bfloat16 if device == "cuda" else torch.float32)
     with autocast:
-        logits_all = model.prime(ids, diff, period, clock, poss, cache)
+        logits_all = model.prime(ids, diff, period, clock, poss, cache,
+                                 lineup=lineup)
     lengths = [len(t) for t in tokens]
     last_logits = torch.stack([logits_all[i, lengths[i] - 1] for i in range(B)])
     key_valid = torch.zeros((B, Lp), dtype=torch.bool, device=device)
@@ -420,21 +442,25 @@ def generate_games(model, vocab: List[str], headers: List[List[str]], device: st
             draws = torch.multinomial(probs, 1, generator=gen)[:, 0]
             choices.update(zip(sample_rows, draws.tolist()))
 
-        next_ids, next_chan = [], []
+        next_ids, next_chan, next_floor = [], [], []
         for i, st in enumerate(states):
             if st.done:
                 next_ids.append(0)  # PAD; masked out of attention below
                 next_chan.append((0, 0, 0, 0))
+                next_floor.append([0] * 10)
                 continue
             choice = choices[i]
             tok = vocab[choice]
             next_chan.append(st.channel())
+            next_floor.append(st.floor_ids())
             st.push(tok)
             tokens[i].append(tok)
             next_ids.append(choice)
 
         ids = torch.tensor(next_ids, device=device)[:, None]
         d, p, c, po = bucketize_channels(next_chan)
+        step_lineup = (torch.tensor(next_floor, device=device)[:, None]
+                       if use_lineup else None)
         pos = torch.tensor([len(t) - 1 if not states[i].done else 0
                             for i, t in enumerate(tokens)], device=device)[:, None]
         alive = torch.tensor([not s.done for s in states], device=device)
@@ -443,7 +469,7 @@ def generate_games(model, vocab: List[str], headers: List[List[str]], device: st
             last_logits = model.step(
                 ids, d[:, None].to(device), p[:, None].to(device),
                 c[:, None].to(device), po[:, None].to(device),
-                pos, cache, key_valid)
+                pos, cache, key_valid, lineup=step_lineup)
     return tokens
 
 
@@ -457,10 +483,12 @@ def generate_game(model, vocab: List[str], header: List[str], device: str,
     away_roster = [t[2:] for t in header[4:h] if t.startswith("P:")]
     home_roster = [t[2:] for t in header[h + 1:] if t.startswith("P:")]
     state = GameState(ts, away_roster, home_roster)
+    use_lineup = getattr(model.cfg, "lineup_channel", False)
 
-    tokens, channels = [], []
+    tokens, channels, floors = [], [], []
     for tok in header:  # forced conditioning prefix
         channels.append(state.channel())
+        floors.append(state.floor_ids())
         if tok.startswith(("dt:", "[START_Q]")) or state.expect == "lineup":
             state.push(tok)
         tokens.append(tok)
@@ -477,10 +505,12 @@ def generate_game(model, vocab: List[str], header: List[str], device: str,
         else:
             ids = torch.tensor([[ts.id[t] for t in tokens]], device=device)
             diff, period, clock, poss = bucketize_channels(channels)
+            lineup = (torch.tensor(floors, device=device)[None]
+                      if use_lineup else None)
             with autocast:
                 logits, _ = model(ids, diff[None].to(device),
                                   period[None].to(device), clock[None].to(device),
-                                  poss[None].to(device))
+                                  poss[None].to(device), lineup=lineup)
             row = logits[0, -1].float().cpu() / temp_of(legal)
             mask = torch.full_like(row, float("-inf"))
             mask[legal] = 0.0
@@ -488,6 +518,7 @@ def generate_game(model, vocab: List[str], header: List[str], device: str,
             choice = int(torch.multinomial(probs, 1, generator=gen))
         tok = vocab[choice]
         channels.append(state.channel())
+        floors.append(state.floor_ids())
         state.push(tok)
         tokens.append(tok)
     return tokens
