@@ -163,7 +163,18 @@ Counterfactual suite (#16) in parallel. MLB stays on the Mac meanwhile.
 16. **Counterfactual sanity suite**: swap in a rim protector -> opponent rim FG%
     drops; five centers -> fails; rest a star -> team output drops. Validates
     the roster-fit use case.
-17. Per-slot sampling temperature calibration to hit ~80% margin coverage.
+17. ~~Per-slot sampling temperature calibration~~ **NEGATIVE RESULT
+    2026-06-12** (results/calibration_grid.json: 9-cell outcome x action
+    grid, 48 dev games x 50 sims): margin sd sits at 19.6-20.3 in EVERY
+    cell — temperature does not move dispersion, so the over-dispersion is
+    structural (residual over-fouling/exposure bias, #1), not a sampler
+    knob. Brier spans 0.2208-0.2380 with no coherent structure (the best
+    value appears at two unrelated corners; coverage column is pure noise
+    at dev n=48, SE ~5.8pp). Decision: NO temperature override — the one
+    val evaluation runs at identity temps (any other pick would be fitting
+    dev noise; the script's pre-declared closest-to-0.80 rule would have
+    chosen the worst-Brier cell, a lesson in selecting on noisy criteria).
+    Dispersion lever moves to the #10 retrain.
 18. User-facing `simulate(roster_a, roster_b)` CLI (sampler already supports
     arbitrary rosters internally).
 
@@ -188,23 +199,44 @@ conditioning (DESIGN.md 4b) only after the 2024 gates are attempted.
     2,426/2,427 games exact + 1 documented waiver, per-pitch state
     (count/outs/bases) verified against source columns on all 711K
     pitches. 5.92M-token corpus, vocab 1,849.
-23. **MLB training** IN FLIGHT 2026-06-12: M1 smoke run (3,000 steps,
-    full-size model, log /tmp/mlb_train.log on the Mac, PID 6032) to
-    confirm convergence — VAL 2.009 @ 1000 -> 1.801 @ 2000, still
-    descending, checkpoint at mlb/cache/model.pt. MLBEventGPT = v2's
-    Block/KVCache by import + 7 baseball channels; training mirrors v2
-    (header given, roster legality mask, per-slot val losses). Full 2024
-    run next, at the gate protocol's split (train < 2024-08-01) — Mac
-    tonight, 3070 Ti when it frees up.
-24. **MLB sampler state machine** (NEXT UP — CPU-only, testable against
-    the smoke checkpoint): deal batters from the lineup, force [HALF]
-    at three outs, legality-mask players to the game header, mask B: to
-    transitions satisfying conservation (runners + batter = runners' +
-    outs + runs). Everything in the gates below depends on this.
-25. MLB after first checkpoint: smoke eval vs real 2024 rates (R/HR/K/BB,
-    EV/LA distributions), embedding probes (batter contact-quality
-    clusters, pitcher arsenal clusters vs team leakage), then the gate
-    suite below. Scale to more seasons only after.
+23. **MLB training**: ~~M1 smoke run~~ DONE 2026-06-12 — 3,000 steps,
+    full-size 6.2M-param model, VAL 1.708 (pitch 1.611 / result 1.168 /
+    event 0.634 / bases 0.501), every slot still descending at the cap:
+    convergence confirmed. Checkpoint copied to desktop as
+    mlb/cache/model_m1smoke.pt (Mac keeps model_smoke3k.pt). **Full 2024
+    run IN FLIGHT** (Mac, PID 11362, /tmp/mlb_train_full.log): 20k steps,
+    batch 4, --val-cutoff 2024-08-01 --val-end 2024-09-01 (1,629 train /
+    413 Aug-dev val; September never loaded — train.py gained --val-end
+    because best-val checkpoint selection is tuning and must not see the
+    test window). ~13h at 0.42 steps/s; restartable on the 3070 Ti when
+    the GPU status line flips.
+24. ~~**MLB sampler state machine**~~ DONE 2026-06-12 (sim/sample.py):
+    deals batters (due batter or fresh bench, slot inherited; E: advances
+    the order EXCEPT truncated_pa — batter re-bats, measured), deals
+    pitchers (current or fresh pen, removed never return), forces [HALF]
+    at exactly three outs, conservation-masks B: (runners + batter =
+    runners' + outs + runs) with [MID] +n settling between-row scores,
+    forces E: by pitch result (ball4 -> walk family, strike3 -> K family,
+    two-strike bunt foul -> K, hit_into_play -> 16 in-play events, HBP),
+    handles dropped third strikes (K with zero outs), walk-offs (game
+    ends the instant home leads in Bot 9+, no trailing O:/B:), skipped
+    Bot 9, extras with the Manfred runner, and per-event minimum-out
+    forcing — every rule measured on the corpus first
+    (test_scripts/derive_sampler_tables.py). Validation:
+    **2,417/2,427 real games drive through fully legal + channel-exact**
+    (test_scripts/drive_real_games.py; 10 documented source-data waivers:
+    voided pitch, lineup-misfiled injury sub, the suspended/traded-Jansen
+    game, 3 count glitches, 4 rain-shortened endings) + 17 handcrafted
+    scenario tests (tests/test_sample.py, 31 tests green with tokenizer
+    suite). Smoke generation vs the 3k-step checkpoint
+    (test_scripts/smoke_generate.py, CPU, ~500 tok/s at batch 6): all
+    games complete and Replay() clean, 17-22 halves (extras + walk-offs
+    occur), PA 66-78 vs real ~75, K/BB/H plausible for an undertrained
+    checkpoint.
+25. MLB after the full checkpoint (NEXT): smoke eval vs real 2024 rates
+    (R/HR/K/BB, EV/LA distributions), embedding probes (batter
+    contact-quality clusters, pitcher arsenal clusters vs team leakage),
+    then the gate suite below. Scale to more seasons only after.
 26. MLB data niceties: venue lookup for neutral-site PARK: tokens; stand
     token for switch hitters if platoon realism underperforms; bat-speed/
     swing-length tokens when 2025 data (full coverage) lands.
@@ -243,12 +275,32 @@ Baselines re-measured under the identical protocol, paired by game.
   win ~60% of games, not ~80% — so a perfectly calibrated simulator can
   legitimately tie a strong baseline on Brier. Margin MAE within +0.2
   runs of the best baseline. Picks reported, never a gate. External
-  anchor: closing moneylines as a reference row in every table.
+  anchor: closing moneylines as a reference row in every table (source
+  still needed). **Targets measured 2026-06-12
+  (mlb/test_scripts/backtest_baselines.py; dev-fit bias+sigma on August,
+  evaluated on the 385-game September window):**
+
+  | reference                  | picks | Brier  | log loss | margin MAE |
+  |----------------------------|-------|--------|----------|------------|
+  | lineup-starter baseline    | 55.6% | 0.2468 | 0.6866   | 3.51       |
+  | team-form baseline         | 52.5% | 0.2470 | 0.6870   | 3.53       |
+
+  So the gate is: **Brier < 0.2470 and margin MAE <= 3.71.** Both
+  baselines hit ~80% p10-p90 coverage (their dev-fit Normal-sigma is
+  honest). No-skill (constant-p) Brier is ~0.250 — the bar is thin but
+  real, exactly as the gate design anticipated. Starter information is
+  worth ~3pp picks over team form at ~equal Brier. Files:
+  mlb/results/backtest_{team,lineup_starter}_2024-09.json.
 - **Gate C — capability & player-stat recovery** (the end goal — first-
   class here, unlike NBA): (i) per-player simmed test-window rates
   (batters: K%, BB%, wOBA; pitchers: K%, BB%) correlate with actuals at
-  **>= 50% of the noise ceiling**, the ceiling being the split-half
-  correlation of the actuals with themselves; (ii) pre-registered
+  **>= 50% of the noise ceiling** — the Spearman-Brown step-up of the
+  September split-half correlation, since the sim is judged against
+  full-window rates. **Measured 2026-06-12 (noise_ceiling_2024-09.json):
+  ceilings/gates — batter K% .635/.317, BB% .437/.219, wOBA~ .192/.096,
+  pitcher K% .435/.217, BB% .317/.158** (one September is VERY noisy;
+  the wOBA gate is honest but weak — K% is the load-bearing stat,
+  matching its known fastest-stabilizing reliability); (ii) pre-registered
   counterfactual suite, >= 4 of 5 correct sign with bootstrap CI
   excluding zero: ace starter -> replacement-level starter (opponent
   runs rise); PARK: swap to Coors / a pitcher's park (totals move
