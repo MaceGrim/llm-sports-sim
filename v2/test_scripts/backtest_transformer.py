@@ -47,29 +47,38 @@ def smooth_win_prob(margins) -> float:
     return 0.5 * (1 + math.erf(mu / (sd * math.sqrt(2))))
 
 
-def simulate_game(model, vocab, header, n_sims, batch, device, seed, temps=1.0):
-    """N independent rollouts of one matchup -> (margins, totals, n_truncated)."""
-    margins, totals, truncated = [], [], 0
-    done = 0
-    while done < n_sims:
-        b = min(batch, n_sims - done)
-        sims = generate_games(model, vocab, [header] * b, device,
-                              seed=seed + done, temperature=temps)
-        for s in sims:
-            if s[-1] != "[EOG]":
+def simulate_all(model, vocab, headers, n_sims, batch, device, seed, temps=1.0):
+    """n_sims rollouts of every header, flat-batched so the GPU always runs
+    full batches -> (margins per game, totals per game, n_truncated)."""
+    jobs = [(gi, h) for gi, h in enumerate(headers) for _ in range(n_sims)]
+    margins = [[] for _ in headers]
+    totals = [[] for _ in headers]
+    truncated = 0
+    t0 = time.time()
+    for s in range(0, len(jobs), batch):
+        chunk = jobs[s:s + batch]
+        sims = generate_games(model, vocab, [h for _, h in chunk], device,
+                              seed=seed + s, temperature=temps)
+        for (gi, _), sim in zip(chunk, sims):
+            if sim[-1] != "[EOG]":
                 truncated += 1
                 continue
-            r = Replay(s).run()
-            margins.append(r.home_score - r.away_score)
-            totals.append(r.home_score + r.away_score)
-        done += b
-    return np.array(margins), np.array(totals), truncated
+            r = Replay(sim).run()
+            margins[gi].append(r.home_score - r.away_score)
+            totals[gi].append(r.home_score + r.away_score)
+        done = min(s + batch, len(jobs))
+        if (s // batch) % 10 == 0:
+            rate = (time.time() - t0) / done
+            print(f"  {done}/{len(jobs)} rollouts "
+                  f"(~{rate * (len(jobs) - done) / 60:.0f} min left)", flush=True)
+    return ([np.array(m) for m in margins], [np.array(t) for t in totals],
+            truncated)
 
 
 def main():
     p = argparse.ArgumentParser()
     p.add_argument("--sims", type=int, default=50)
-    p.add_argument("--batch", type=int, default=64)
+    p.add_argument("--batch", type=int, default=128)
     p.add_argument("--limit", type=int, default=0, help="cap games (0 = all)")
     p.add_argument("--seed", type=int, default=0)
     p.add_argument("--val-cutoff", default="2025-03-01")
@@ -94,23 +103,20 @@ def main():
         val = val[:args.limit]
     print(f"{len(val)} games, {args.sims} sims each")
 
-    rows, all_truncated = [], 0
-    t0 = time.time()
-    for k, g in enumerate(val):
-        toks = g["tokens"]
-        header = toks[:toks.index("[START_Q]") + 11]
-        margins, totals, trunc = simulate_game(
-            model, vocab, header, args.sims, args.batch, device,
-            seed=args.seed + k * 100_000, temps=temps)
-        all_truncated += trunc
+    headers = [g["tokens"][:g["tokens"].index("[START_Q]") + 11] for g in val]
+    all_margins, all_totals, all_truncated = simulate_all(
+        model, vocab, headers, args.sims, args.batch, device,
+        seed=args.seed, temps=temps)
 
+    rows = []
+    for g, margins, totals in zip(val, all_margins, all_totals):
+        toks = g["tokens"]
         real = Replay(toks).run()
         actual_margin = real.home_score - real.away_score
-        home_win_prob = smooth_win_prob(margins)
         rows.append({
             "date": g["date"], "game_id": g["game_id"],
             "matchup": f"{toks[1][5:]}@{toks[2][5:]}",
-            "home_win_prob": home_win_prob,
+            "home_win_prob": smooth_win_prob(margins),
             "home_won": actual_margin > 0,
             "margin_err": float(margins.mean() - actual_margin),
             "total_err": float(totals.mean() - (real.home_score + real.away_score)),
@@ -118,10 +124,6 @@ def main():
             "margin_p90": float(np.percentile(margins, 90)),
             "actual_margin": actual_margin,
         })
-        if (k + 1) % 10 == 0:
-            rate = (time.time() - t0) / (k + 1)
-            print(f"  {k + 1}/{len(val)} games  ({rate:.1f}s/game, "
-                  f"~{rate * (len(val) - k - 1) / 60:.0f} min left)")
 
     probs = np.array([r["home_win_prob"] for r in rows])
     wins = np.array([r["home_won"] for r in rows])
@@ -133,6 +135,8 @@ def main():
     total_mae = np.mean([abs(r["total_err"]) for r in rows])
     coverage = np.mean([r["margin_p10"] <= r["actual_margin"] <= r["margin_p90"]
                         for r in rows])
+    sim_sd = np.mean([m.std(ddof=1) for m in all_margins])
+    real_sd = np.std([r["actual_margin"] for r in rows], ddof=1)
 
     print(f"\n=== TRANSFORMER BACKTEST ({len(rows)} games, {args.sims} sims) ===")
     print(f"  Pick accuracy:  {picks:.1%}")
@@ -141,6 +145,8 @@ def main():
     print(f"  Margin MAE:     {margin_mae:.1f} pts")
     print(f"  Total MAE:      {total_mae:.1f} pts")
     print(f"  Margin coverage (p10-p90): {coverage:.1%}  (target ~80%)")
+    print(f"  Sim margin sd (per-game mean): {sim_sd:.1f}  "
+          f"(real window sd {real_sd:.1f})")
     if all_truncated:
         print(f"  truncated rollouts skipped: {all_truncated}")
 
@@ -151,7 +157,8 @@ def main():
                "protocol": "v2-smoothed", "picks": float(picks),
                "brier": float(brier), "log_loss": float(log_loss),
                "margin_mae": float(margin_mae), "total_mae": float(total_mae),
-               "coverage_p10_p90": float(coverage), "truncated": all_truncated}
+               "coverage_p10_p90": float(coverage), "sim_margin_sd": float(sim_sd),
+               "real_margin_sd": float(real_sd), "truncated": all_truncated}
     with open(out, "w") as f:
         json.dump({"summary": summary, "rows": rows}, f, indent=2)
     print(f"saved {out}")
