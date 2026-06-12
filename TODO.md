@@ -95,9 +95,10 @@ Single source of truth for project tasks. Architecture rationale lives in
     — the question was asked but never answered (see correspondence below).
 20. Cite the official NBA API, not BigDataBall, in the submission (unless
     academically affiliated).
-21. **Make a first real git commit** — the entire project is uncommitted on top
-    of the initial empty commit. .gitignore (nba_data/, caches, checkpoints)
-    landed 2026-06-11.
+21. ~~**Make a first real git commit**~~ DONE 2026-06-11 — three commits: v1
+    legacy baseline, v2 simulator, mlb scaffold. nba_data/, caches, and
+    checkpoints stay out of git (.gitignore); to run inference elsewhere,
+    copy v2/cache/{model.pt, tokens.jsonl, games.jsonl} (~255MB).
 
 Suggested order: 1 -> 4-6 -> 14. Items 7, 11, 16 are where the Sloan paper's
 most interesting figures live.
