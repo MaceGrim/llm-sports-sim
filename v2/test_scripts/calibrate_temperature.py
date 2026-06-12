@@ -46,11 +46,11 @@ def main():
     p.add_argument("--seed", type=int, default=0)
     p.add_argument("--temps-out", default="1.0,0.9,0.8")
     p.add_argument("--temps-act", default="1.0,0.9,0.8")
+    p.add_argument("--ckpt", default=os.path.join(CACHE, "model.pt"))
     args = p.parse_args()
 
     device = pick_device()
-    ckpt = torch.load(os.path.join(CACHE, "model.pt"),
-                      map_location=device, weights_only=False)
+    ckpt = torch.load(args.ckpt, map_location=device, weights_only=False)
     vocab = ckpt["vocab"]
     model = EventGPT(Config(**ckpt["config"])).to(device)
     model.load_state_dict(ckpt["state_dict"])
