@@ -119,6 +119,22 @@ per-slot temperature calibration (#17) on dev -> Gate A check -> build
 #15b -> Gate B -> if it fails, #10/#11 levers and re-enter at Gate A.
 Counterfactual suite (#16) in parallel. MLB stays on the Mac meanwhile.
 
+**Round 1 verdicts (2026-06-12, 6x checkpoint @19k, identity temps,
+results/backtest_transformer_2025-03-01_s50.json + gate_b.py):**
+- Transformer protocol-v2 row: 62.4% picks / 0.2371 Brier / 0.6791 log
+  loss / 14.0 margin MAE / coverage 80.8% / sim sd 20.1 (real 16.7).
+- **Gate A: FAIL** — coverage 80.8 is in [76, 84], but sim margin sd is
+  20.1 vs the <= 18.4 the 10%-of-real component requires. Temperature
+  can't fix it (#17 negative result); dispersion is structural.
+- **Gate B: FAIL** — paired bootstrap: vs player-form +0.0254 Brier, CI
+  [+0.0014, +0.0496] (significantly WORSE); vs team-form +0.0127, CI
+  [-0.0064, +0.0324] (statistically tied); MAE 14.0 vs <= 12.76 needed.
+- Next (pre-committed): retrain with #10 levers (lineup channel + untied
+  head, both implemented and smoke-tested 2026-06-12) at --val-cutoff
+  2025-01-01 (makes the Jan-Feb dev window clean), then re-enter Gate A.
+  Checkpoint backup at cache/model_6x_19k.pt; new run writes
+  cache/model_v3.pt.
+
 ## Evaluation / product
 
 14. **The proper backtest**: transformer vs StatisticalSimulator, same protocol
