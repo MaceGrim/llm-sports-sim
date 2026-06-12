@@ -105,6 +105,18 @@ Open questions, in the order to resolve them:
    [HALF] covering pre-pitch pickoffs/advances of the placed runner.
 4. Pitcher fatigue: pitch count is derivable; `n_thruorder_pitcher` is on-row.
    Channel or token? (Channel, probably — same as score.)
+4b. **Season handling (settled with Mason, 2026-06-12)**: two mechanisms,
+   not one. A global SEASON: header token carries the environment (ball,
+   pitch clock, league offense). Player vintage is embedding-side:
+   input vector = e_player + δ_(player, season), with δ looked up from
+   (player, game date) at embed time — no grammar change — and weight-
+   decayed toward zero so fringe players shrink to their career self.
+   Unlocks cross-era queries (δ_Kershaw,2015 vs δ_Trout,2016 under 2024
+   rules) and is falsifiable via the physics tokens: each vintage's
+   generated V:/T:/EV:/LA: distributions must match that season's
+   actuals. A bare global season token is NOT enough — embeddings would
+   average the career and vintages would be unaddressable. Same scheme
+   applies to v2 (TODO #7).
 5. Season scope: start with 2024 (3.0M tokens — between v2's single-season
    2.8M and six-season 16M), add 2015-2023 after the pipeline round-trips.
 
