@@ -181,6 +181,25 @@ state-alignment fix in the sampler, backtest_transformer_..._s50_v3.json):**
   --val-cutoff 2025-03-01 (train on dev too once tuning is frozen, one
   val evaluation).
 
+**Round 3 verdicts (2026-06-12, model_v4 = v3 + #7 vintage deltas,
+backtest_transformer_..._s50_v4.json):**
+- v4's dev gain (0.2121 vs v3's 0.2257, paired 48 games) did NOT
+  transfer: val 61.8% picks / 0.2278 Brier / 13.4 MAE / coverage 83.1 /
+  sd 19.2. Brier a wash vs v3 (0.2292); MAE and sd regressed — **Gate A
+  sd FAILS for v4** (19.2 > 18.4); style probe 0.075 (< 0.093 gate).
+  Lesson recorded: n=48 dev windows over-promise ~0.01 of Brier.
+- For context the player baseline scores 0.2085 on the same 48 dev
+  games — even v4's dev number was behind it.
+- **Mason authorized 200 sims overnight (2026-06-12)** — protocol for
+  final certification runs is now 200 sims/game, smoothed estimator,
+  all rows re-measured identically.
+- In flight: **model_v5** = v4 architecture (tuning frozen) trained at
+  --val-cutoff 2025-03-01 — regains Jan-Feb (the 403 freshest games)
+  and lets the 2024-25 vintage delta train through Feb instead of Dec,
+  v4's known handicap. Then: probes, 200-sim certification val run,
+  team baseline re-measured at 200 sims (post form-fix), gate_b,
+  counterfactual suite.
+
 ## Evaluation / product
 
 14. **The proper backtest**: transformer vs StatisticalSimulator, same protocol
