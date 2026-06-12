@@ -4,7 +4,7 @@ or by team? Reuses the embedding-lab metrics so numbers are comparable:
   count-based reference points -- CTX-full: teammate 0.89 / style 0.03
                                   ACT:      teammate 0.03 / style 0.20
 
-Run from v2/:  python test_scripts/probe_embeddings.py
+Run from v2/:  python test_scripts/probe_embeddings.py [checkpoint.pt]
 """
 
 import os
@@ -25,7 +25,8 @@ CKPT = os.path.join(HERE, "..", "cache", "model.pt")
 
 
 def main():
-    ckpt = torch.load(CKPT, map_location="cpu", weights_only=False)
+    ckpt_path = sys.argv[1] if len(sys.argv) > 1 else CKPT
+    ckpt = torch.load(ckpt_path, map_location="cpu", weights_only=False)
     vocab = ckpt["vocab"]
     emb_table = ckpt["state_dict"]["tok_emb.weight"].float().numpy()
     index = {tok: i for i, tok in enumerate(vocab)}

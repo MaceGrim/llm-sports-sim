@@ -151,11 +151,12 @@ def main():
     p.add_argument("--sims", type=int, default=25)
     p.add_argument("--batch", type=int, default=128)
     p.add_argument("--seed", type=int, default=0)
+    p.add_argument("--ckpt", default=os.path.join(CACHE, "model.pt"))
+    p.add_argument("--tag", default="", help="suffix for the results filename")
     args = p.parse_args()
 
     device = pick_device()
-    ckpt = torch.load(os.path.join(CACHE, "model.pt"),
-                      map_location=device, weights_only=False)
+    ckpt = torch.load(args.ckpt, map_location=device, weights_only=False)
     vocab = ckpt["vocab"]
     for tok in [STAR, RIM] + CENTERS:
         if tok not in vocab:
@@ -265,7 +266,8 @@ def main():
               flush=True)
 
     print(f"\n{passed}/5 passed (gate needs >= 4)")
-    out = os.path.join(HERE, "..", "results", "counterfactual_suite.json")
+    tag = f"_{args.tag}" if args.tag else ""
+    out = os.path.join(HERE, "..", "results", f"counterfactual_suite{tag}.json")
     with open(out, "w") as f:
         json.dump({"games": len(dev), "sims": args.sims, "skips": dict(skips),
                    "passed": passed, "results": results}, f, indent=2)

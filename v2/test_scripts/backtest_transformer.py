@@ -83,12 +83,13 @@ def main():
     p.add_argument("--seed", type=int, default=0)
     p.add_argument("--val-cutoff", default="2025-03-01")
     p.add_argument("--temps", default="", help="per-slot temperature JSON")
+    p.add_argument("--ckpt", default=os.path.join(CACHE, "model.pt"))
+    p.add_argument("--tag", default="", help="suffix for the results filename")
     args = p.parse_args()
     temps = json.loads(args.temps) if args.temps else 1.0
 
     device = pick_device()
-    ckpt = torch.load(os.path.join(CACHE, "model.pt"),
-                      map_location=device, weights_only=False)
+    ckpt = torch.load(args.ckpt, map_location=device, weights_only=False)
     vocab = ckpt["vocab"]
     model = EventGPT(Config(**ckpt["config"])).to(device)
     model.load_state_dict(ckpt["state_dict"])
@@ -150,8 +151,10 @@ def main():
     if all_truncated:
         print(f"  truncated rollouts skipped: {all_truncated}")
 
-    out = os.path.join(HERE, "..", "results",
-                       f"backtest_transformer_{args.val_cutoff}_s{args.sims}.json")
+    tag = f"_{args.tag}" if args.tag else ""
+    out = os.path.join(
+        HERE, "..", "results",
+        f"backtest_transformer_{args.val_cutoff}_s{args.sims}{tag}.json")
     os.makedirs(os.path.dirname(out), exist_ok=True)
     summary = {"n_games": len(rows), "sims": args.sims, "temps": temps,
                "protocol": "v2-smoothed", "picks": float(picks),
