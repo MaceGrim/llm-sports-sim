@@ -104,13 +104,28 @@ Single source of truth for project tasks. Architecture rationale lives in
 ## MLB twin (mlb/ — see mlb/DESIGN.md for design + status)
 
 22. ~~Statcast encoder + replay with v2's round-trip contract~~ DONE
-    2026-06-12 — 2,427/2,427 games of 2024 exact, zero waivers (score,
-    per-half runs, batter/pitcher box lines from tokens alone). 3.0M-token
-    corpus, vocab 1,570.
-23. MLB training run: reuse v2's EventGPT/KVCache by import (don't copy);
-    decide outs/bases channels first (mlb/DESIGN.md open question #3).
+    2026-06-12, extended same day to grammar v1.1 (pitch velo/spin, plate
+    location, batted-ball physics, O:/B: state transitions, PARK:/MONTH:):
+    2,426/2,427 games exact + 1 documented waiver, per-pitch state
+    (count/outs/bases) verified against source columns on all 711K
+    pitches. 5.92M-token corpus, vocab 1,849.
+23. **MLB training** IN FLIGHT 2026-06-12: M1 smoke run (3,000 steps,
+    full-size model, log /tmp/mlb_train.log on the Mac) to confirm
+    convergence — desktop GPU is reserved for NBA inference (Mason).
+    MLBEventGPT = v2's Block/KVCache by import + 7 baseball channels;
+    training mirrors v2 (header given, roster legality mask, per-slot
+    val losses). Full run on the 3070 Ti when it frees up.
 24. MLB sampler state machine: deal batters from the lineup, force [HALF]
-    at three outs, legality-mask players to the game header.
+    at three outs, legality-mask players to the game header, mask B: to
+    transitions satisfying conservation (runners + batter = runners' +
+    outs + runs).
+25. MLB after first checkpoint: smoke eval vs real 2024 rates (R/HR/K/BB,
+    EV/LA distributions), embedding probes (batter contact-quality
+    clusters, pitcher arsenal clusters vs team leakage), then scale to
+    2015-2023 Statcast and a backtest baseline (mirror NBA #14/#15b).
+26. MLB data niceties: venue lookup for neutral-site PARK: tokens; stand
+    token for switch hitters if platoon realism underperforms; bat-speed/
+    swing-length tokens when 2025 data (full coverage) lands.
 
 ## Admin / Sloan
 
