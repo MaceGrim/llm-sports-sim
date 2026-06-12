@@ -71,6 +71,35 @@ Single source of truth for project tasks. Architecture rationale lives in
 12. Shot-zone tokens from coordinates (deferred until shot-chart realism matters).
 13. Run embedding probes (teammate@10 / style@10) as training callbacks.
 
+## Definition of GOOD (ratified with Mason 2026-06-12) — NBA exit criteria
+
+The NBA work is not done until ALL three gates pass. Protocol v2 for every
+number: 50 sims/game (200 was too expensive), home-win prob from a normal
+fit to the margins (empirical frequency at 50 sims adds ~0.005 Brier noise),
+both baselines re-measured under the identical protocol, paired by game.
+
+- **Gate A — calibration**: margin coverage (p10-p90) in [78, 82] (now
+  85.1); margin sd within 10% of the real window's (~16.7; now ~26).
+  Temperature tuned on a dev window only (Jan-Feb 2025; model-seen — note
+  the caveat, fix at next retrain by moving val-cutoff to 2025-01-01),
+  one evaluation on the untouched 343-game val set.
+- **Gate B — prediction (required, Mason's bar: beat BOTH baselines)**:
+  transformer Brier better than the player-form baseline (#15b, same
+  roster information) AND the team-form baseline (0.2205 at 200 sims;
+  re-measure at v2 protocol) on the 343-game window, paired bootstrap;
+  margin MAE within +0.5 of the best baseline. Picks reported, never a
+  gate (n=343 cannot distinguish ~5pp).
+- **Gate C — capability**: pre-registered counterfactual suite (#16),
+  >= 4 of 5 with correct sign and bootstrap CI excluding zero; embedding
+  probes hold (teammate@10 <= 0.11, style@10 no worse than current).
+- **External anchor**: historical Vegas closing lines for the val window
+  as a reference row in every backtest table (Mason: yes, pull them).
+
+Execution order: protocol v2 in both backtests -> re-run baseline ->
+per-slot temperature calibration (#17) on dev -> Gate A check -> build
+#15b -> Gate B -> if it fails, #10/#11 levers and re-enter at Gate A.
+Counterfactual suite (#16) in parallel. MLB stays on the Mac meanwhile.
+
 ## Evaluation / product
 
 14. **The proper backtest**: transformer vs StatisticalSimulator, same protocol

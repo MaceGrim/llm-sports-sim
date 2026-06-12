@@ -5,16 +5,23 @@ scored on picks / Brier / log loss / margin MAE / coverage.
 
 Conditioning: the real game's header (teams, rosters, Q1 starters) — i.e. the
 night's actual actives and starting lineups, information a pre-game predictor
-plausibly has. The baseline instead uses season-to-date team form. Numbers to
-beat (343-game val window, 2025-03-01+): 65.9% picks / 0.2205 Brier /
-margin MAE 12.0 (results/backtest_baseline_2025-03-01.json).
+plausibly has. The baseline instead uses season-to-date team form.
 
-Run from v2/:  python test_scripts/backtest_transformer.py [--sims 200]
+Protocol v2 (Mason, 2026-06-12): 50 sims/game, and the home-win probability
+comes from a normal fit to the simulated margins — at 50 sims an empirical
+frequency adds ~0.005 of pure estimation noise to Brier, which would swamp
+the differences we're measuring. Compare only against baselines run under
+the same protocol. --temps applies per-slot sampling temperatures (#17),
+e.g. '{"outcome": 0.9, "action": 0.9}'.
+
+Run from v2/:  python test_scripts/backtest_transformer.py [--sims 50]
                [--limit 0] [--batch 64] [--val-cutoff 2025-03-01]
+               [--temps JSON]
 """
 
 import argparse
 import json
+import math
 import os
 import sys
 import time
@@ -32,13 +39,22 @@ HERE = os.path.dirname(os.path.abspath(__file__))
 CACHE = os.path.join(HERE, "..", "cache")
 
 
-def simulate_game(model, vocab, header, n_sims, batch, device, seed):
+def smooth_win_prob(margins) -> float:
+    """P(home win) from a normal fit to the simulated margins."""
+    mu, sd = margins.mean(), margins.std(ddof=1)
+    if sd == 0:
+        return 0.5 if mu == 0 else float(mu > 0)
+    return 0.5 * (1 + math.erf(mu / (sd * math.sqrt(2))))
+
+
+def simulate_game(model, vocab, header, n_sims, batch, device, seed, temps=1.0):
     """N independent rollouts of one matchup -> (margins, totals, n_truncated)."""
     margins, totals, truncated = [], [], 0
     done = 0
     while done < n_sims:
         b = min(batch, n_sims - done)
-        sims = generate_games(model, vocab, [header] * b, device, seed=seed + done)
+        sims = generate_games(model, vocab, [header] * b, device,
+                              seed=seed + done, temperature=temps)
         for s in sims:
             if s[-1] != "[EOG]":
                 truncated += 1
@@ -52,12 +68,14 @@ def simulate_game(model, vocab, header, n_sims, batch, device, seed):
 
 def main():
     p = argparse.ArgumentParser()
-    p.add_argument("--sims", type=int, default=200)
+    p.add_argument("--sims", type=int, default=50)
     p.add_argument("--batch", type=int, default=64)
     p.add_argument("--limit", type=int, default=0, help="cap games (0 = all)")
     p.add_argument("--seed", type=int, default=0)
     p.add_argument("--val-cutoff", default="2025-03-01")
+    p.add_argument("--temps", default="", help="per-slot temperature JSON")
     args = p.parse_args()
+    temps = json.loads(args.temps) if args.temps else 1.0
 
     device = pick_device()
     ckpt = torch.load(os.path.join(CACHE, "model.pt"),
@@ -83,12 +101,12 @@ def main():
         header = toks[:toks.index("[START_Q]") + 11]
         margins, totals, trunc = simulate_game(
             model, vocab, header, args.sims, args.batch, device,
-            seed=args.seed + k * 100_000)
+            seed=args.seed + k * 100_000, temps=temps)
         all_truncated += trunc
 
         real = Replay(toks).run()
         actual_margin = real.home_score - real.away_score
-        home_win_prob = float((margins > 0).mean() + 0.5 * (margins == 0).mean())
+        home_win_prob = smooth_win_prob(margins)
         rows.append({
             "date": g["date"], "game_id": g["game_id"],
             "matchup": f"{toks[1][5:]}@{toks[2][5:]}",
@@ -127,9 +145,10 @@ def main():
         print(f"  truncated rollouts skipped: {all_truncated}")
 
     out = os.path.join(HERE, "..", "results",
-                       f"backtest_transformer_{args.val_cutoff}.json")
+                       f"backtest_transformer_{args.val_cutoff}_s{args.sims}.json")
     os.makedirs(os.path.dirname(out), exist_ok=True)
-    summary = {"n_games": len(rows), "sims": args.sims, "picks": float(picks),
+    summary = {"n_games": len(rows), "sims": args.sims, "temps": temps,
+               "protocol": "v2-smoothed", "picks": float(picks),
                "brier": float(brier), "log_loss": float(log_loss),
                "margin_mae": float(margin_mae), "total_mae": float(total_mae),
                "coverage_p10_p90": float(coverage), "truncated": all_truncated}
