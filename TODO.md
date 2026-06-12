@@ -221,6 +221,17 @@ state-alignment fix in the sampler, backtest_transformer_..._s50_v3.json):**
     defensive end; structural, won't fix without defense tokens; candidate
     swap: replace with a falsifiable offense-side counterfactual, or
     accept 4/5 as the realistic ceiling of this suite).
+    **ROUND 2 (model_v3): 4/5 — Gate C counterfactual component PASS**
+    (counterfactual_suite_v3.json): add_star FIXED (+2.6 [+0.8, +4.4] —
+    the lineup channel broke the team-context entanglement);
+    rim_protector now PASSES (-1.3pp opponent rim FG%, CI excludes 0 —
+    the floor channel gives defense an identity, refuting round 1's
+    "structural" call); five_centers holds; venue_flip implies HCA ~3.4
+    (was 7.4 — the stale-channel fix); rest_star regressed to null
+    (-0.12, CI spans 0 — season-blind embeddings make next-man-up too
+    capable; watch whether #7 vintage deltas recover it). With probes
+    passing (teammate@10 0.035 = chance, style@10 0.093 held), **Gate C
+    PASSES for model_v3.**
 17. ~~Per-slot sampling temperature calibration~~ **NEGATIVE RESULT
     2026-06-12** (results/calibration_grid.json: 9-cell outcome x action
     grid, 48 dev games x 50 sims): margin sd sits at 19.6-20.3 in EVERY
