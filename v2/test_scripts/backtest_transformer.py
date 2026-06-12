@@ -31,6 +31,7 @@ import torch
 
 sys.path.insert(0, os.path.join(os.path.dirname(os.path.abspath(__file__)), ".."))
 
+from sim.form import season_index
 from sim.model import Config, EventGPT, pick_device
 from sim.sample import generate_games
 from sim.tokenizer import Replay
@@ -47,7 +48,8 @@ def smooth_win_prob(margins) -> float:
     return 0.5 * (1 + math.erf(mu / (sd * math.sqrt(2))))
 
 
-def simulate_all(model, vocab, headers, n_sims, batch, device, seed, temps=1.0):
+def simulate_all(model, vocab, headers, n_sims, batch, device, seed, temps=1.0,
+                 seasons=None):
     """n_sims rollouts of every header, flat-batched so the GPU always runs
     full batches -> (margins per game, totals per game, n_truncated)."""
     jobs = [(gi, h) for gi, h in enumerate(headers) for _ in range(n_sims)]
@@ -58,7 +60,9 @@ def simulate_all(model, vocab, headers, n_sims, batch, device, seed, temps=1.0):
     for s in range(0, len(jobs), batch):
         chunk = jobs[s:s + batch]
         sims = generate_games(model, vocab, [h for _, h in chunk], device,
-                              seed=seed + s, temperature=temps)
+                              seed=seed + s, temperature=temps,
+                              seasons=[seasons[gi] for gi, _ in chunk]
+                              if seasons else None)
         for (gi, _), sim in zip(chunk, sims):
             if sim[-1] != "[EOG]":
                 truncated += 1
@@ -105,9 +109,11 @@ def main():
     print(f"{len(val)} games, {args.sims} sims each")
 
     headers = [g["tokens"][:g["tokens"].index("[START_Q]") + 11] for g in val]
+    seasons = ([season_index(g["date"]) for g in val]
+               if getattr(model.cfg, "n_seasons", 0) else None)
     all_margins, all_totals, all_truncated = simulate_all(
         model, vocab, headers, args.sims, args.batch, device,
-        seed=args.seed, temps=temps)
+        seed=args.seed, temps=temps, seasons=seasons)
 
     rows = []
     for g, margins, totals in zip(val, all_margins, all_totals):

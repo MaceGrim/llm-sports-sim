@@ -44,7 +44,7 @@ import torch
 
 sys.path.insert(0, os.path.join(os.path.dirname(os.path.abspath(__file__)), ".."))
 
-from sim.form import season_start
+from sim.form import season_index, season_start
 from sim.games import load_games
 from sim.model import Config, EventGPT, pick_device
 from sim.sample import generate_games
@@ -205,12 +205,16 @@ def main():
     print(f"{len(flat)} rollouts ({len(jobs)} conditions); skips: {dict(skips)}",
           flush=True)
 
+    use_season = getattr(model.cfg, "n_seasons", 0)
+    game_season = {gi: season_index(g["date"]) for gi, g in enumerate(dev)}
     stats = defaultdict(lambda: defaultdict(list))  # cond -> game -> per-sim
     t0 = time.time()
     for s in range(0, len(flat), args.batch):
         chunk = flat[s:s + args.batch]
         sims = generate_games(model, vocab, [j[2] for j, _ in chunk], device,
-                              seed=args.seed + s, temperature=1.0)
+                              seed=args.seed + s, temperature=1.0,
+                              seasons=[game_season[j[0]] for j, _ in chunk]
+                              if use_season else None)
         for (gi, cond, _, away_set, home_set), sim in zip([j for j, _ in chunk],
                                                           sims):
             if sim[-1] != "[EOG]":

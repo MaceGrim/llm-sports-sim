@@ -29,6 +29,7 @@ import torch
 
 sys.path.insert(0, os.path.join(os.path.dirname(os.path.abspath(__file__)), ".."))
 
+from sim.form import season_index
 from sim.model import Config, EventGPT, pick_device
 from sim.sample import generate_games
 from sim.tokenizer import Replay
@@ -70,11 +71,13 @@ def main():
 
     # Flat job list: games interleaved into full-size batches so the GPU
     # always runs at args.batch, instead of one under-sized batch per game.
+    use_season = getattr(model.cfg, "n_seasons", 0)
     jobs, actuals = [], []
     for gi, g in enumerate(dev):
         toks = g["tokens"]
         header = toks[:toks.index("[START_Q]") + 11]
-        jobs.extend((gi, header) for _ in range(args.sims))
+        sea = season_index(g["date"]) if use_season else None
+        jobs.extend((gi, header, sea) for _ in range(args.sims))
         real = Replay(toks).run()
         actuals.append(real.home_score - real.away_score)
 
@@ -85,9 +88,11 @@ def main():
         t0 = time.time()
         for s in range(0, len(jobs), args.batch):
             chunk = jobs[s:s + args.batch]
-            sims = generate_games(model, vocab, [h for _, h in chunk], device,
-                                  seed=args.seed + s, temperature=temps)
-            for (gi, _), sim in zip(chunk, sims):
+            sims = generate_games(model, vocab, [h for _, h, _ in chunk], device,
+                                  seed=args.seed + s, temperature=temps,
+                                  seasons=[se for _, _, se in chunk]
+                                  if use_season else None)
+            for (gi, _, _), sim in zip(chunk, sims):
                 if sim[-1] == "[EOG]":
                     r = Replay(sim).run()
                     by_game[gi].append(r.home_score - r.away_score)
