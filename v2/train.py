@@ -141,6 +141,10 @@ def main():
                    help="decouple the output head from tok_emb (#10)")
     p.add_argument("--season-channel", action="store_true",
                    help="season conditioning: global channel + vintage deltas (#7)")
+    p.add_argument("--delta-decay", type=float, default=0.2,
+                   help="weight decay for the vintage-delta table; at the "
+                        "default 0.01 the deltas grew to the same norm as the "
+                        "base embeddings and stopped being corrections")
     p.add_argument("--smoke", action="store_true", help="tiny model, 60 steps")
     p.add_argument("--out", default="",
                    help="checkpoint path (default cache/model.pt; smoke runs "
@@ -174,7 +178,15 @@ def main():
     model = EventGPT(cfg).to(device)
     print(f"model: {model.num_params() / 1e6:.1f}M params")
 
-    opt = torch.optim.AdamW(model.parameters(), lr=args.lr, weight_decay=0.01)
+    if cfg.n_seasons:
+        delta = {model.delta_emb.weight}
+        opt = torch.optim.AdamW(
+            [{"params": [q for q in model.parameters() if q not in delta]},
+             {"params": list(delta), "weight_decay": args.delta_decay}],
+            lr=args.lr, weight_decay=0.01)
+    else:
+        opt = torch.optim.AdamW(model.parameters(), lr=args.lr,
+                                weight_decay=0.01)
 
     # bf16 on GPU: halves memory (keeps us inside dedicated VRAM — Windows
     # silently spills to slow shared memory otherwise) and uses tensor cores.
