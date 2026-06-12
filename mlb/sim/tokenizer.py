@@ -19,11 +19,13 @@ those sections are alphabetical (v2's roster-ordering principle):
                                     Top 1, Bot 1, Top 2, ... (a skipped
                                     bottom half only ever ends the game)
     [PA] P:pitcher P:batter
-    T:FF V:94 S:2200 Z:5            one pitch: the pitcher's choice — type,
-    R:called_strike                 velocity (1 mph), spin (100 rpm), target
-                                    zone — then the batter's result (:unk
-                                    when untracked: pitch-clock violations,
-                                    the odd lost reading)
+    T:FF V:94 S:2200 PX:-3 PZ:24    one pitch: the pitcher's choice — type,
+    R:called_strike                 velocity (1 mph), spin (100 rpm), plate
+                                    location (3-inch bins, catcher's view,
+                                    PX negative = inside to a RHB) — then
+                                    the batter's result (:unk when
+                                    untracked: pitch-clock violations, the
+                                    odd lost reading)
     BB:fly_ball EV:98 LA:25 SP:-10  contact physics after R:hit_into_play —
                                     trajectory, exit velo (2 mph), launch
                                     angle (5 deg), spray direction (10 deg,
@@ -31,6 +33,16 @@ those sections are alphabetical (v2's roster-ordering principle):
                                     omitted as derivable physics)
     E:strikeout                     PA outcome, on the final pitch only
     +1 .. +4                        runs scored on the play, after R:/E:
+    O:n B:xyz                       state transition, after the play: outs
+                                    recorded, then base occupancy 1st-2nd-
+                                    3rd (B:101 = corners) — how the runners
+                                    actually advanced. B: follows every PA
+                                    that leaves the half-inning open; O:/B:
+                                    after a non-final pitch are steals,
+                                    pickoffs, caught stealings. Outs reach
+                                    3 exactly at [HALF]; count/outs/bases
+                                    are replay-tracked and verified against
+                                    the source state columns on every pitch
     [NEWP] P:name | [NEWB] P:name   mid-PA pitching change / pinch hitter
     [MID] +n                        runs scored between pitches (balk-type
                                     plays, 54 in 2024)
@@ -85,9 +97,18 @@ STRIKEOUTS = {"strikeout", "strikeout_double_play"}
 # Numeric token ranges: (prefix, lo, hi, step). Values bucket to
 # prefix:floor(v/step)*step within [lo, hi); the tails are prefix:lo-
 # (below) and prefix:hi+ (at or above), v2's D:36+ pattern. Bounds chosen
-# from the 2024 distributions with room for outliers.
+# from the 2024 distributions (plate bounds at p0.1/p99.9; inches).
 RANGES = {"V": (60, 106, 1), "S": (1000, 3600, 100),
-          "EV": (30, 120, 2), "LA": (-90, 90, 5), "SP": (-90, 90, 10)}
+          "EV": (30, 120, 2), "LA": (-90, 90, 5), "SP": (-90, 90, 10),
+          "PX": (-33, 33, 3), "PZ": (-12, 66, 3)}
+
+# Count bookkeeping by pitch result. Fouls only add a strike below two;
+# hit_into_play and hit_by_pitch end the PA and never touch the count.
+# Verified against the balls/strikes columns on every 2024 pitch.
+BALL_DESCS = {"ball", "blocked_ball", "automatic_ball", "pitchout"}
+STRIKE_DESCS = {"called_strike", "swinging_strike", "swinging_strike_blocked",
+                "missed_bunt", "automatic_strike", "foul_tip"}
+FOUL_DESCS = {"foul", "foul_bunt", "bunt_foul_tip"}
 
 
 def bucket(prefix: str, value) -> str:
@@ -106,6 +127,34 @@ def spray_degrees(hc_x, hc_y) -> float:
     center, negative = left field. Home plate is at (125.42, 198.27) in
     the coordinate frame Baseball Savant uses."""
     return math.degrees(math.atan2(hc_x - 125.42, 198.27 - hc_y))
+
+
+def bases_str(row) -> str:
+    """Base occupancy 1st-2nd-3rd from a row's pre-pitch state columns
+    (on_1b/2b/3b hold the runner's MLB ID, null when the base is empty)."""
+    return "".join("1" if pd.notna(v) else "0"
+                   for v in (row.on_1b, row.on_2b, row.on_3b))
+
+
+def has_voided_pitch(g: pd.DataFrame) -> bool:
+    """True if some pitch's count, per the rules above, fails to land on
+    the next same-PA row's count (one 2024 game: a 3-2 ball after which
+    the batter stayed at 3-2 — a voided/dead pitch the source kept as a
+    row). The sweep waives per-pitch state (only) for these games."""
+    prev = None
+    for r in g.itertuples(index=False):
+        if prev is not None and r.at_bat_number == prev.at_bat_number:
+            b, s = int(prev.balls), int(prev.strikes)
+            if prev.description in BALL_DESCS:
+                b += 1
+            elif prev.description in STRIKE_DESCS:
+                s += 1
+            elif prev.description in FOUL_DESCS:
+                s = min(2, s + 1)
+            if (int(r.balls), int(r.strikes)) != (b, s):
+                return True
+        prev = r
+    return False
 
 
 def encode_game(g: pd.DataFrame, names: Dict[int, str]) -> List[str]:
@@ -131,7 +180,14 @@ def encode_game(g: pd.DataFrame, names: Dict[int, str]) -> List[str]:
             ids = sorted(ids, key=names.get)
         return [marker] + [f"P:{names[i]}" for i in ids]
 
-    tokens = ["[GAME]", f"TEAM:{away}", f"TEAM:{home}"]
+    # Park and calendar conditioning (Mason, 2026-06-12): the venue shapes
+    # offense (Coors) and the month proxies weather (cold April suppresses
+    # carry). PARK is the home team — right for all but the handful of
+    # neutral-site games a year (Seoul, London); a venue lookup can refine
+    # it later. month is from game_date (YYYY-MM-DD).
+    month = int(str(rows[0].game_date)[5:7])
+    tokens = ["[GAME]", f"TEAM:{away}", f"TEAM:{home}",
+              f"PARK:{home}", f"MONTH:{month}"]
     tokens += section("[LINEUP_A]", order["Top"][:9], ordered=True)
     tokens += section("[LINEUP_H]", order["Bot"][:9], ordered=True)
     tokens += section("[BENCH_A]", order["Top"][9:], ordered=False)
@@ -143,7 +199,7 @@ def encode_game(g: pd.DataFrame, names: Dict[int, str]) -> List[str]:
     half = None  # (inning, topbot) of the half currently open
     cur_ab = cur_pitcher = cur_batter = None
     prev = None
-    for r in rows:
+    for k, r in enumerate(rows):
         # Runs that scored between this row and the previous one (no-pitch
         # plays). The scoring side must be a batting side; it decides whether
         # the run belongs to the half just ended or the one about to open.
@@ -163,6 +219,15 @@ def encode_game(g: pd.DataFrame, names: Dict[int, str]) -> List[str]:
         if (r.inning, r.inning_topbot) != half:
             tokens.append("[HALF]")
             half = (r.inning, r.inning_topbot)
+            # No-pitch plays before the half's first pitch (Manfred runner
+            # picked off or advanced): emit the deviation from the rule
+            # start state the replay assumes (empty, or runner on second
+            # in extras).
+            if int(r.outs_when_up):
+                tokens.append(f"O:{int(r.outs_when_up)}")
+            start_bases = "010" if r.inning >= 10 else "000"
+            if bases_str(r) != start_bases:
+                tokens.append(f"B:{bases_str(r)}")
         if jump:
             if half[1] != scorer_bats_in:
                 raise ValueError(f"game {r.game_pk}: between-row run fits "
@@ -183,11 +248,11 @@ def encode_game(g: pd.DataFrame, names: Dict[int, str]) -> List[str]:
         ptype = str(r.pitch_type) if pd.notna(r.pitch_type) else "unk"
         if ptype != "unk" and ptype not in PITCH_TYPES:
             raise ValueError(f"unseen pitch_type {ptype!r}")
-        zone = f"Z:{int(r.zone)}" if pd.notna(r.zone) else "Z:unk"
         if r.description not in DESCRIPTIONS:
             raise ValueError(f"unseen description {r.description!r}")
         tokens += [f"T:{ptype}", bucket("V", r.release_speed),
-                   bucket("S", r.release_spin_rate), zone,
+                   bucket("S", r.release_spin_rate),
+                   bucket("PX", r.plate_x * 12), bucket("PZ", r.plate_z * 12),
                    f"R:{r.description}"]
         if r.description == "hit_into_play":
             bb = str(r.bb_type) if pd.notna(r.bb_type) else "unk"
@@ -205,6 +270,26 @@ def encode_game(g: pd.DataFrame, names: Dict[int, str]) -> List[str]:
                 + (r.post_away_score - r.away_score))
         if runs:
             tokens.append(f"+{runs}")
+
+        # State transition, from the NEXT row's pre-pitch columns: outs
+        # recorded (a half always closes at exactly 3) and the resulting
+        # base occupancy. B: is omitted when the half ends (bases wiped)
+        # and after the game's final pitch; after a non-final pitch these
+        # only appear for steals/pickoffs/caught-stealings.
+        nxt = rows[k + 1] if k + 1 < len(rows) else None
+        if nxt is not None:
+            if (nxt.inning, nxt.inning_topbot) == half:
+                d_outs = int(nxt.outs_when_up) - int(r.outs_when_up)
+                if d_outs < 0:
+                    raise ValueError(f"game {r.game_pk}: outs went backwards "
+                                     f"at ab {nxt.at_bat_number}")
+                if d_outs:
+                    tokens.append(f"O:{d_outs}")
+                nxt_bases = bases_str(nxt)
+                if pd.notna(r.events) or nxt_bases != bases_str(r):
+                    tokens.append(f"B:{nxt_bases}")
+            else:
+                tokens.append(f"O:{3 - int(r.outs_when_up)}")
         prev = r
     tokens.append("[EOG]")
     return tokens
@@ -218,10 +303,12 @@ class Replay:
     """Replays a token sequence, reconstructing the game token by token.
 
     After run(): away_score/home_score, half_runs (one total per half-inning,
-    in order — Top 1, Bot 1, ...), bat (per batter: pa/h/hr/bb/k), and arm
-    (per pitcher: bf/h/bb/k). State channels for training (score diff, inning,
-    outs, count, bases) come later — outs and bases need the advancement
-    tokens that are deliberately not in grammar v1.
+    in order — Top 1, Bot 1, ...), bat (per batter: pa/h/hr/bb/k), arm
+    (per pitcher: bf/h/bb/k), and pitch_state — the (balls, strikes, outs,
+    bases) before every pitch, tracked from tokens alone: count from R:
+    results, outs from O:, bases from B:. The round-trip sweep verifies
+    pitch_state against the source state columns on every pitch, which is
+    what makes generated state transitions trustworthy.
     """
 
     def __init__(self, tokens: List[str]):
@@ -230,6 +317,9 @@ class Replay:
         self.half_runs: List[int] = []
         self.bat = defaultdict(_line)
         self.arm = defaultdict(lambda: {"bf": 0, "h": 0, "bb": 0, "k": 0})
+        self.balls = self.strikes = self.outs = 0
+        self.bases = "000"
+        self.pitch_state: List[tuple] = []
 
     def run(self) -> "Replay":
         t = self.tokens
@@ -241,9 +331,15 @@ class Replay:
             tok = t[i]
             if tok == "[HALF]":
                 self.half_runs.append(0)
+                inning = (len(self.half_runs) + 1) // 2
+                # Manfred runner: regular-season extra innings start with a
+                # runner placed on second (2020+ rule; postseason differs —
+                # revisit when game_type P is added).
+                self.outs, self.bases = 0, "010" if inning >= 10 else "000"
                 i += 1
             elif tok == "[PA]":
                 pitcher, batter = t[i + 1][2:], t[i + 2][2:]
+                self.balls = self.strikes = 0
                 i += 3
             elif tok == "[NEWP]":
                 pitcher = t[i + 1][2:]
@@ -254,10 +350,18 @@ class Replay:
             elif tok == "[MID]":
                 self._score(int(t[i + 1]))
                 i += 2
+            elif tok.startswith("O:"):
+                self.outs += int(tok[2:])
+                i += 1
+            elif tok.startswith("B:"):
+                self.bases = tok[2:]
+                i += 1
             elif tok.startswith("T:"):
-                hit_into_play = t[i + 4] == "R:hit_into_play"
-                i += 5  # T: V: S: Z: R:
-                if hit_into_play:
+                self.pitch_state.append(
+                    (self.balls, self.strikes, self.outs, self.bases))
+                desc = t[i + 5][2:]
+                i += 6  # T: V: S: PX: PZ: R:
+                if desc == "hit_into_play":
                     if not t[i].startswith("BB:"):
                         raise ValueError(f"ball in play without contact "
                                          f"tokens at {t[i]!r}")
@@ -268,6 +372,13 @@ class Replay:
                 if t[i].startswith("+"):
                     self._score(int(t[i]))
                     i += 1
+                # post-play O:/B: are standalone branches of the main loop
+                if desc in BALL_DESCS:
+                    self.balls += 1
+                elif desc in STRIKE_DESCS:
+                    self.strikes += 1
+                elif desc in FOUL_DESCS:
+                    self.strikes = min(2, self.strikes + 1)
             else:
                 raise ValueError(f"unexpected token {tok!r}")
         return self
@@ -306,11 +417,13 @@ def build_vocab(token_lists) -> List[str]:
     seen = set()
     for tokens in token_lists:
         seen.update(tokens)
-    seen.update(f"Z:{z}" for z in range(1, 15))
     seen.update(f"+{n}" for n in range(1, 5))
     seen.update(f"T:{p}" for p in PITCH_TYPES)
     seen.update(f"BB:{b}" for b in BB_TYPES)
-    seen.update(["T:unk", "Z:unk", "BB:unk"])
+    seen.update(f"B:{n >> 2 & 1}{n >> 1 & 1}{n & 1}" for n in range(8))
+    seen.update(f"O:{n}" for n in range(1, 4))
+    seen.update(f"MONTH:{m}" for m in range(3, 11))
+    seen.update(["T:unk", "BB:unk"])
     for prefix, (lo, hi, step) in RANGES.items():
         seen.update(f"{prefix}:{v}" for v in range(lo, hi, step))
         seen.update([f"{prefix}:{lo}-", f"{prefix}:{hi}+", f"{prefix}:unk"])

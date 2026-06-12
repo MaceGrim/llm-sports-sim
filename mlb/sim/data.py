@@ -13,10 +13,11 @@ import pandas as pd
 
 COLS = ["game_pk", "game_date", "game_type", "away_team", "home_team",
         "inning", "inning_topbot", "at_bat_number", "pitch_number",
-        "batter", "pitcher", "pitch_type", "zone", "description", "events",
+        "batter", "pitcher", "pitch_type", "description", "events",
         "home_score", "away_score", "post_home_score", "post_away_score",
         "release_speed", "release_spin_rate", "bb_type", "launch_speed",
-        "launch_angle", "hc_x", "hc_y"]
+        "launch_angle", "hc_x", "hc_y", "plate_x", "plate_z",
+        "balls", "strikes", "outs_when_up", "on_1b", "on_2b", "on_3b"]
 
 
 def load_season(parquet_path: str) -> pd.DataFrame:
