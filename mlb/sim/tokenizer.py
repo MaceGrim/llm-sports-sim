@@ -309,6 +309,10 @@ class Replay:
     results, outs from O:, bases from B:. The round-trip sweep verifies
     pitch_state against the source state columns on every pitch, which is
     what makes generated state transitions trustworthy.
+
+    channels holds one (score_diff, inning, half, outs, balls, strikes,
+    bases) tuple per token, each reflecting state BEFORE that token's group,
+    so a model conditioned on channels never sees its own label.
     """
 
     def __init__(self, tokens: List[str]):
@@ -320,15 +324,18 @@ class Replay:
         self.balls = self.strikes = self.outs = 0
         self.bases = "000"
         self.pitch_state: List[tuple] = []
+        self.channels: List[tuple] = []
 
     def run(self) -> "Replay":
         t = self.tokens
         assert t[0] == "[GAME]", "sequence must start with [GAME]"
         self.away_team, self.home_team = t[1][5:], t[2][5:]
         i = t.index("[HALF]")  # header is declarative; play starts here
+        self.channels += [self._state()] * i
         pitcher = batter = None
         while t[i] != "[EOG]":
             tok = t[i]
+            group_start, state = i, self._state()
             if tok == "[HALF]":
                 self.half_runs.append(0)
                 inning = (len(self.half_runs) + 1) // 2
@@ -381,7 +388,15 @@ class Replay:
                     self.strikes = min(2, self.strikes + 1)
             else:
                 raise ValueError(f"unexpected token {tok!r}")
+            self.channels += [state] * (i - group_start)
+        self.channels.append(self._state())  # [EOG]
         return self
+
+    def _state(self) -> tuple:
+        n = len(self.half_runs)  # current half is n - 1 (0 during header)
+        return (self.home_score - self.away_score, (n + 1) // 2,
+                (n - 1) % 2 if n else 0, self.outs,
+                self.balls, self.strikes, int(self.bases, 2))
 
     def _outcome(self, event: str, batter: str, pitcher: str):
         b, p = self.bat[batter], self.arm[pitcher]

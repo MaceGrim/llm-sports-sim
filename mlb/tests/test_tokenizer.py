@@ -113,6 +113,19 @@ def test_spray_orientation():
     assert spray_degrees(200.0, 100.0) > 20
 
 
+def test_mini_channels_no_leak():
+    r = Replay(MINI).run()
+    assert len(r.channels) == len(MINI)  # one state tuple per token
+    # the HR's +2 token must carry the score diff BEFORE the homer
+    plus2 = MINI.index("+2")
+    diff, inning, half, outs, balls, strikes, bases = r.channels[plus2]
+    assert (diff, inning, half) == (0, 1, 0)
+    assert bases == 4  # B:100 -> runner on first = bits 100
+    # first pitch of Bot 1: home now trails by 3, half flips
+    bot_pitch = MINI.index("T:SL")
+    assert r.channels[bot_pitch][:3] == (-3, 1, 1)
+
+
 def test_vocab_padded_and_specials_first():
     vocab = build_vocab([MINI])
     assert vocab[0] == "[PAD]"
