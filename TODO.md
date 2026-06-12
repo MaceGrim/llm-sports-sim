@@ -176,9 +176,20 @@ results/backtest_transformer_2025-03-01_s50.json + gate_b.py):**
     team form. Vegas reference also pulled (backtest_vegas.py, Kaggle
     closing spreads + spread->prob logistic fit on 2008-2024): 72.6% /
     0.1806 / 10.5 — the market ceiling, never a gate.
-16. **Counterfactual sanity suite**: swap in a rim protector -> opponent rim FG%
-    drops; five centers -> fails; rest a star -> team output drops. Validates
-    the roster-fit use case.
+16. **Counterfactual sanity suite** (pre-registered in
+    test_scripts/counterfactual_suite.py). **ROUND 1: 3/5 — Gate C FAIL**
+    (2026-06-12, 6x checkpoint, results/counterfactual_suite.json):
+    rest_star PASS (-5.7 [-8.8, -2.7]); five_centers PASS (3PA -8.0);
+    venue_flip PASS on sign but implies HCA ~7.4 pts vs ~3 real
+    (over-learned home edge — watch after retrain); add_star FAIL
+    BACKWARD (Jokic joining a foreign roster *drops* margin -3.4
+    [-5.9, -1.2] — player identity entangled with team context, the
+    embedding-lab conclusion at the behavioral level; the #10 lineup
+    channel attacks exactly this); rim_protector FAIL null (-0.002 rim
+    FG%, CI spans 0 — defender identity is invisible in the grammar's
+    defensive end; structural, won't fix without defense tokens; candidate
+    swap: replace with a falsifiable offense-side counterfactual, or
+    accept 4/5 as the realistic ceiling of this suite).
 17. ~~Per-slot sampling temperature calibration~~ **NEGATIVE RESULT
     2026-06-12** (results/calibration_grid.json: 9-cell outcome x action
     grid, 48 dev games x 50 sims): margin sd sits at 19.6-20.3 in EVERY
