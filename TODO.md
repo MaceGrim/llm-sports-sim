@@ -85,10 +85,25 @@ both baselines re-measured under the identical protocol, paired by game.
   one evaluation on the untouched 343-game val set.
 - **Gate B — prediction (required, Mason's bar: beat BOTH baselines)**:
   transformer Brier better than the player-form baseline (#15b, same
-  roster information) AND the team-form baseline (0.2205 at 200 sims;
-  re-measure at v2 protocol) on the 343-game window, paired bootstrap;
-  margin MAE within +0.5 of the best baseline. Picks reported, never a
-  gate (n=343 cannot distinguish ~5pp).
+  roster information) AND the team-form baseline on the 343-game window,
+  paired bootstrap; margin MAE within +0.5 of the best baseline. Picks
+  reported, never a gate (n=343 cannot distinguish ~5pp).
+  **Targets measured 2026-06-12, protocol v2, identical 343 games:**
+
+  | reference                  | picks | Brier  | log loss | margin MAE |
+  |----------------------------|-------|--------|----------|------------|
+  | Vegas closing lines        | 72.6% | 0.1806 | 0.5376   | 10.5       |
+  | player-form baseline #15b  | 67.9% | 0.2117 | 0.6136   | 13.0       |
+  | team-form baseline         | 63.6% | 0.2244 | 0.6402   | 12.3       |
+
+  So the gate is: **Brier < 0.2117 and margin MAE <= 12.8.** Files:
+  results/backtest_{player,team_paired343,vegas_2025-03-01}.json. The
+  team-form number moved from the recorded 0.2205 because (a) protocol v2
+  smoothing, and (b) a real bug fixed 2026-06-12: with the multi-season
+  cache, sim/form.py team_form had no season boundary, so "season-to-date
+  form" silently became career-since-2018 averages (BKN@DET expected
+  margin +0.9 vs +6.6 season-scoped). form.py is now season-scoped
+  (Aug 1 boundary), matching the original single-season-cache behavior.
 - **Gate C — capability**: pre-registered counterfactual suite (#16),
   >= 4 of 5 with correct sign and bootstrap CI excluding zero; embedding
   probes hold (teammate@10 <= 0.11, style@10 no worse than current).
@@ -125,7 +140,7 @@ Counterfactual suite (#16) in parallel. MLB stays on the Mac meanwhile.
     simulation value before any Sloan claim), #10/#11 model quality.
 15. Re-run the statistical baseline's backtest split regular-season vs playoffs
     (current 673-game numbers in DESIGN.md mix both).
-15b. **Player-form baseline** (Mason, 2026-06-11): the team-form baseline never
+15b. ~~**Player-form baseline**~~ (Mason, 2026-06-11): the team-form baseline never
     uses player form to predict the score (only to decorate box lines), and it
     doesn't see the night's rosters — but the transformer does, so a win could
     be dismissed as roster knowledge, not modeling. Add a baseline that takes
@@ -133,6 +148,14 @@ Counterfactual suite (#16) in parallel. MLB stays on the Mac meanwhile.
     season-to-date scoring vs opponent defense, and sums. The three-way gap
     decomposes the transformer's edge into roster-information value vs
     learned-simulation value — the second number is the Sloan headline.
+    BUILT 2026-06-12 (v2/test_scripts/backtest_player_baseline.py):
+    deterministic margin + Normal(sigma) fit on the Jan-Feb dev window
+    (sigma=17.1). Result on the 343-game val set: 67.9% picks / 0.2117
+    Brier / 13.0 margin MAE — the strongest baseline and the binding Gate B
+    bar. Roster information alone is worth ~4pp picks / 0.013 Brier over
+    team form. Vegas reference also pulled (backtest_vegas.py, Kaggle
+    closing spreads + spread->prob logistic fit on 2008-2024): 72.6% /
+    0.1806 / 10.5 — the market ceiling, never a gate.
 16. **Counterfactual sanity suite**: swap in a rim protector -> opponent rim FG%
     drops; five centers -> fails; rest a star -> team output drops. Validates
     the roster-fit use case.
