@@ -9,7 +9,8 @@ import pytest
 
 sys.path.insert(0, os.path.join(os.path.dirname(os.path.abspath(__file__)), ".."))
 
-from sim.tokenizer import Replay, build_vocab, encode_game  # noqa: E402
+from sim.tokenizer import (Replay, bucket, build_vocab,  # noqa: E402
+                           encode_game, spray_degrees)
 
 HERE = os.path.dirname(os.path.abspath(__file__))
 PARQUET = os.path.join(HERE, "..", "statcast_2024.parquet")
@@ -25,16 +26,18 @@ MINI = [
     "[PEN_A]", "P:Ap", "P:Ap2", "[PEN_H]", "P:Hp",
     "[HALF]",
     "[PA]", "P:Hp", "P:A1",
-    "T:FF", "Z:5", "R:swinging_strike", "E:strikeout",
+    "T:FF", "V:95", "S:2300", "Z:5", "R:swinging_strike", "E:strikeout",
     "[PA]", "P:Hp", "P:A2",
-    "T:FF", "Z:unk", "R:hit_into_play", "E:home_run", "+2",
+    "T:FF", "V:91", "S:unk", "Z:unk", "R:hit_into_play",
+    "BB:fly_ball", "EV:104", "LA:25", "SP:-20", "E:home_run", "+2",
     "[MID]", "+1",
     "[HALF]",
     "[PA]", "P:Ap", "P:H1",
-    "T:SL", "Z:3", "R:foul",
+    "T:SL", "V:84", "S:2600", "Z:3", "R:foul",
     "[NEWP]", "P:Ap2",
     "[NEWB]", "P:H2",
-    "T:CH", "Z:9", "R:hit_into_play", "E:single", "+1",
+    "T:CH", "V:87", "S:1700", "Z:9", "R:hit_into_play",
+    "BB:ground_ball", "EV:92", "LA:-5", "SP:10", "E:single", "+1",
     "[EOG]",
 ]
 
@@ -69,11 +72,36 @@ def test_unexpected_token_raises():
         Replay(bad).run()
 
 
+def test_ball_in_play_requires_contact_tokens():
+    bad = [tok for tok in MINI
+           if tok not in ("BB:fly_ball", "EV:104", "LA:25", "SP:-20")]
+    with pytest.raises(ValueError, match="without contact tokens"):
+        Replay(bad).run()
+
+
+def test_bucket_edges():
+    assert bucket("V", 94.4) == "V:94"
+    assert bucket("V", 45) == "V:60-"      # position-player lob
+    assert bucket("V", 106.1) == "V:106+"
+    assert bucket("LA", -7) == "LA:-10"    # floors toward negative
+    assert bucket("EV", None) == "EV:unk"
+    assert bucket("SP", 130) == "SP:90+"   # caught behind the plate
+    assert bucket("S", 2288) == "S:2200"
+
+
+def test_spray_orientation():
+    # straight up the middle from home plate is 0; left field negative
+    assert abs(spray_degrees(125.42, 100.0)) < 0.01
+    assert spray_degrees(50.0, 100.0) < -20
+    assert spray_degrees(200.0, 100.0) > 20
+
+
 def test_vocab_padded_and_specials_first():
     vocab = build_vocab([MINI])
     assert vocab[0] == "[PAD]"
     assert vocab.index("[GAME]") < vocab.index("+1")
-    for tok in ("Z:14", "+4", "T:KN", "T:unk", "Z:unk"):
+    for tok in ("Z:14", "+4", "T:KN", "T:unk", "Z:unk", "V:60-", "V:106+",
+                "S:3600+", "EV:118", "LA:-90", "SP:90+", "BB:popup"):
         assert tok in vocab  # programmatic padding, even if unseen
     assert len(vocab) == len(set(vocab))
 

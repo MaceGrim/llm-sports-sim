@@ -56,8 +56,13 @@ Measured on 2024-06-05..11 (90 games, 26,422 pitches; `explore_statcast.py`):
 [PEN_A] / [PEN_H] P:starter P:...     starter first, relievers alphabetical
 [HALF]                                each half-inning, by count (Top 1, ...)
 per PA:    [PA] P:<pitcher> P:<batter>
-per pitch: T:<type> Z:<zone> R:<description>  (+ E:<events> on the last
-           pitch, + "+n" when runs score on the play)
+per pitch: T:<type> V:<mph> S:<rpm/100> Z:<zone> R:<description>
+           — the pitcher's choice, then the batter's result
+in play:   BB:<trajectory> EV:<mph/2> LA:<deg/5> SP:<deg/10>
+           — contact physics after R:hit_into_play; spray direction from
+           the hit coordinates (negative = left field), distance omitted
+           as derivable from EV/LA/spray
+final:     E:<events> on the last pitch, "+n" when runs score on the play
 mid-PA:    [NEWP] P:x (pitching change, 58/season) | [NEWB] P:x (PH, 14)
 no-pitch:  [MID] +n  (runs between pitch rows, 54/season)
 inning/half/outs: deterministic -> state machine + channels, never tokens
@@ -103,8 +108,14 @@ Open questions, in the order to resolve them:
   run.py mirroring v2's layout). **Round-trip: 2,427/2,427 regular-season
   games exact, zero waivers** — final score, per-half-inning runs, batter
   lines (PA/H/HR/BB/K) and pitcher lines (BF/H/BB/K) from tokens alone,
-  verified against parquet-derived truth (`python run.py tokenize`). Tokens:
-  mean 1,243/game, p95 1,475, max 1,873; corpus 3,017,808; vocab 1,570.
+  verified against parquet-derived truth (`python run.py tokenize`).
+- 2026-06-12 (later): grammar enriched per Mason — per-pitch velocity and
+  spin (V:/S:), per-contact trajectory/exit-velo/launch-angle/spray
+  (BB:/EV:/LA:/SP:, spray from the hit coordinates). Round-trip still
+  2,427/2,427 exact. Tokens: mean 2,034/game, p95 2,402, max 3,053 (train
+  at max_len 3,200); corpus 4,936,560; vocab 1,761. Physics sanity: median
+  HR is EV:104/LA:25, HR spray peaks at the pull gaps, league four-seam
+  median V:94 (real 2024 average: 94.2).
   Tests in tests/test_tokenizer.py (handcrafted grammar sequence + the
   [MID]-straddle game 747004 pinned). Next: training — reuse v2's EventGPT/
   KVCache by import, settle open question #3 (outs/bases channels), then
