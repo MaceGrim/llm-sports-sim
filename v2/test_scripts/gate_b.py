@@ -48,6 +48,9 @@ def main():
     p.add_argument("--transformer",
                    default=os.path.join(RESULTS,
                                         "backtest_transformer_2025-03-01_s50.json"))
+    p.add_argument("--team",
+                   default=os.path.join(RESULTS, "backtest_team_paired343.json"),
+                   help="team-form rows measured under the SAME sim count")
     args = p.parse_args()
 
     def load(path, key):
@@ -58,8 +61,7 @@ def main():
     refs = {
         "player-form": load(os.path.join(RESULTS,
                                          "backtest_player_2025-03-01.json"), "rows"),
-        "team-form": load(os.path.join(RESULTS,
-                                       "backtest_team_paired343.json"), "rows"),
+        "team-form": load(args.team, "rows"),
         "vegas": load(os.path.join(RESULTS,
                                    "backtest_vegas_2025-03-01.json"), "rows"),
     }
