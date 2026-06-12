@@ -57,6 +57,21 @@ Single source of truth for project tasks. Architecture rationale lives in
    shared-memory spill — 0.34s/game at batch 128 (was 17.6s at 64).
 7. **Season conditioning**: e_player + δ_season factorization + global season
    token/channel (see DESIGN.md) — unlocks cross-era matchups.
+   BUILT 2026-06-12 (Config.n_seasons, --season-channel, vintage deltas
+   with their own weight-decay group). Paired dev comparison (48 clean
+   Jan-Feb games, identical seeds): v3 (no seasons) brier 0.2257 / mae
+   11.8; v4 (delta decay 0.01, deltas grew to base-embedding norm ~0.34)
+   **0.2121 / 11.3 — the vintage signal is real and big**; v4b (decay
+   0.2, norms ~0.25) 0.2369 — clamping the deltas kills the gain, so the
+   information genuinely lives in large deltas. COST: v4 base-embedding
+   style@10 drops 0.093 -> 0.075 (composite e+delta_2024: 0.072) — the
+   probe's reference profiles are season-POOLED, so any season-aware
+   split of the representation bleeds probe score by construction.
+   OPEN QUESTION FOR MASON: Gate C's "style@10 no worse than current"
+   was written for a season-blind embedding; decide whether the right
+   instrument for season-aware models is a per-season-reference probe,
+   or whether v3 (passes probes, loses ~0.017 dev brier) is the
+   canonical model and v4 the prediction variant.
 8. Playoff/game-type conditioning channel (currently playoffs are just excluded).
 9. Scrape the missing **2023-24 season from the official NBA API** (sanctioned
    path per BigDataBall).
@@ -306,6 +321,24 @@ conditioning (DESIGN.md 4b) only after the 2024 gates are attempted.
     (R/HR/K/BB, EV/LA distributions), embedding probes (batter
     contact-quality clusters, pitcher arsenal clusters vs team leakage),
     then the gate suite below. Scale to more seasons only after.
+    **Harnesses all built + plumbing-verified 2026-06-12** (mlb/
+    test_scripts/, each tested against the 3k smoke checkpoint):
+    eval_rates.py (Gate A rates + physics tripwires; smoke reading:
+    PA +1.3%, EV quartiles exact, HR -40%/BB -18%/R -12% — the
+    undertrained regress-to-frequent signature), calibrate_temperature.py
+    (Gate A lever, dev-window-only, genuinely held-out unlike NBA's),
+    probe_embeddings.py (Gate C iii; smoke reading: batter teammate@10
+    0.427 vs chance 0.031 — early co-occurrence leakage, expect it to
+    fall with training like v2; pitcher arsenal ceiling 0.592),
+    counterfactual_suite.py + build_platoon_pick.py (Gate C ii,
+    pre-registered: Skubal ace swap, SEA/COL park swap, Skubal-vs-Skenes
+    platoon into DET's 7-LHB lineup, Judge to 9th, Judge transplant),
+    backtest_transformer.py (Gates A/B/C(i) in ONE September pass — 50
+    sims/game saves margins + per-player box totals so the test window
+    is simulated once per attempt; needs Mac/GPU compute: ~19k sims).
+    Blocked on the M1 checkpoint (laptop at the library; best VAL 1.621
+    @ step ~10k saved on its disk, val was overfitting after, so the run
+    is effectively complete — kill + fetch when it's back on the network).
 26. MLB data niceties: venue lookup for neutral-site PARK: tokens; stand
     token for switch hitters if platoon realism underperforms; bat-speed/
     swing-length tokens when 2025 data (full coverage) lands.
@@ -360,6 +393,14 @@ Baselines re-measured under the identical protocol, paired by game.
   real, exactly as the gate design anticipated. Starter information is
   worth ~3pp picks over team form at ~equal Brier. Files:
   mlb/results/backtest_{team,lineup_starter}_2024-09.json.
+  Moneyline source options (researched 2026-06-12, needs Mason's pick —
+  reference row, not a blocker): BigDataBall sells MLB game logs WITH
+  odds (existing account relationship); The Odds API has historical MLB
+  from mid-2020 (paid); the old free sportsbookreviewsonline archive is
+  dead. Gate verdict machinery (test_scripts/gate_verdicts.py — Gate A
+  coverage, Gate B paired bootstrap, Gate C(i) correlations) reads saved
+  artifacts only, so re-running analysis never burns the one-shot
+  September simulation.
 - **Gate C — capability & player-stat recovery** (the end goal — first-
   class here, unlike NBA): (i) per-player simmed test-window rates
   (batters: K%, BB%, wOBA; pitchers: K%, BB%) correlate with actuals at
