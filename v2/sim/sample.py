@@ -451,9 +451,17 @@ def generate_games(model, vocab: List[str], headers: List[List[str]], device: st
                 continue
             choice = choices[i]
             tok = vocab[choice]
-            next_chan.append(st.channel())
-            next_floor.append(st.floor_ids())
-            st.push(tok)
+            # A dt: token STARTS its event: push first so channel/floor are
+            # this event's start state, exactly as Replay marks it in
+            # training. (push snapshots before applying the dt itself.)
+            if tok.startswith("dt:"):
+                st.push(tok)
+                next_chan.append(st.channel())
+                next_floor.append(st.floor_ids())
+            else:
+                next_chan.append(st.channel())
+                next_floor.append(st.floor_ids())
+                st.push(tok)
             tokens[i].append(tok)
             next_ids.append(choice)
 
@@ -517,8 +525,13 @@ def generate_game(model, vocab: List[str], header: List[str], device: str,
             probs = torch.softmax(row + mask, dim=-1)
             choice = int(torch.multinomial(probs, 1, generator=gen))
         tok = vocab[choice]
-        channels.append(state.channel())
-        floors.append(state.floor_ids())
-        state.push(tok)
+        if tok.startswith("dt:"):  # event start: state must be post-push
+            state.push(tok)
+            channels.append(state.channel())
+            floors.append(state.floor_ids())
+        else:
+            channels.append(state.channel())
+            floors.append(state.floor_ids())
+            state.push(tok)
         tokens.append(tok)
     return tokens
