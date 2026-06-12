@@ -19,6 +19,7 @@ Free-throw rules (measured on the real corpus, see TODO #1):
   shooter chosen by the model from either team.
 """
 
+from collections import Counter
 from typing import Dict, List, Optional
 
 import torch
@@ -30,6 +31,20 @@ from .tokenizer import possession_after_score
 NO_FT_FOULS = {"F:offensive charge foul"}
 # Events that arm a technical free throw (shooter from either team).
 TECH_FT_EVENTS = ("TF:", "V:delay of game", "EJ:")
+
+
+def slot_temperatures(ts: "TokenSets", temperature):
+    """Normalize the temperature argument into a per-slot lookup. A float
+    applies everywhere (the old behavior); a dict maps slot classes
+    ('action' / 'actor' / 'outcome' / 'dt') to temperatures, with 'default'
+    (1.0) covering unlisted classes. A slot's class is the plurality class
+    of its legal tokens (legal sets are near-homogeneous by construction)."""
+    if isinstance(temperature, dict):
+        default = temperature.get("default", 1.0)
+        return lambda legal: temperature.get(
+            Counter(ts.slot_class[j] for j in legal).most_common(1)[0][0],
+            default)
+    return lambda legal: temperature
 
 
 def ft_remaining(kind: str) -> List[str]:
@@ -62,6 +77,12 @@ class TokenSets:
         self.foul = by(lambda t: t.startswith("F:"))
         self.tf = by(lambda t: t.startswith("TF:"))
         self.v_ej = by(lambda t: t.startswith(("V:", "EJ:")))
+        # Slot class per vocab id, for per-slot sampling temperature (#17):
+        # 'outcome' = made/miss, 'dt' = clock, 'actor' = players, else 'action'.
+        self.slot_class = ["outcome" if t in ("made", "miss")
+                           else "dt" if t.startswith("dt:")
+                           else "actor" if t.startswith("P:")
+                           else "action" for t in vocab]
 
 
 class GameState:
@@ -381,6 +402,7 @@ def generate_games(model, vocab: List[str], headers: List[List[str]], device: st
         key_valid[i, :n] = True
 
     gen = torch.Generator(device="cpu").manual_seed(seed)
+    temp_of = slot_temperatures(ts, temperature)
 
     while any(not s.done for s in states) and max(len(t) for t in tokens) < max_len:
         # Whole-batch sampling: one GPU->CPU transfer and one multinomial per
@@ -389,7 +411,8 @@ def generate_games(model, vocab: List[str], headers: List[List[str]], device: st
         choices = {i: l[0] for i, l in legals.items() if len(l) == 1}
         sample_rows = [i for i, l in legals.items() if len(l) > 1]
         if sample_rows:
-            rows = last_logits[sample_rows].float().cpu() / temperature
+            t_vec = torch.tensor([temp_of(legals[i]) for i in sample_rows])
+            rows = last_logits[sample_rows].float().cpu() / t_vec[:, None]
             mask = torch.full_like(rows, float("-inf"))
             for r, i in enumerate(sample_rows):
                 mask[r, legals[i]] = 0.0
@@ -443,6 +466,7 @@ def generate_game(model, vocab: List[str], header: List[str], device: str,
         tokens.append(tok)
 
     gen = torch.Generator(device="cpu").manual_seed(seed)
+    temp_of = slot_temperatures(ts, temperature)
     autocast = torch.autocast(device, dtype=torch.bfloat16, enabled=device == "cuda")
     model.eval()
 
@@ -457,7 +481,7 @@ def generate_game(model, vocab: List[str], header: List[str], device: str,
                 logits, _ = model(ids, diff[None].to(device),
                                   period[None].to(device), clock[None].to(device),
                                   poss[None].to(device))
-            row = logits[0, -1].float().cpu() / temperature
+            row = logits[0, -1].float().cpu() / temp_of(legal)
             mask = torch.full_like(row, float("-inf"))
             mask[legal] = 0.0
             probs = torch.softmax(row + mask, dim=-1)

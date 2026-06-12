@@ -5,6 +5,11 @@ model, not a point predictor. For each held-out game we run K simulations and
 score the implied win probability (Brier, log loss, calibration) and the
 dispersion of outcomes (does the actual margin land inside the simulated
 distribution?). Trivial baselines are scored alongside for reference.
+
+Protocol v2 (2026-06-12): the win probability comes from a normal fit to the
+simulated margins, not the empirical win frequency — at 50 sims/game the
+empirical estimate adds ~0.005 of pure estimation noise to Brier. Every
+simulator compared under this protocol must use the same estimator.
 """
 
 import math
@@ -32,9 +37,9 @@ def backtest(sim: Simulator, games: List[Game], start_date: str,
             continue
 
         sims = [sim.simulate(g.away, g.home, g.date, rng) for _ in range(n_sims)]
-        home_win_prob = sum(1 for s in sims if s.winner == g.home) / n_sims
         margins = np.array([s.home_score - s.away_score for s in sims])
         totals = np.array([s.home_score + s.away_score for s in sims])
+        home_win_prob = smooth_win_prob(margins)
 
         actual_margin = g.home_score - g.away_score
         actual_total = g.home_score + g.away_score
@@ -56,6 +61,14 @@ def backtest(sim: Simulator, games: List[Game], start_date: str,
             break
 
     return {"summary": _summarize(rows), "games": rows}
+
+
+def smooth_win_prob(margins) -> float:
+    """P(home win) from a normal fit to the simulated margins (protocol v2)."""
+    mu, sd = margins.mean(), margins.std(ddof=1)
+    if sd == 0:
+        return 0.5 if mu == 0 else float(mu > 0)
+    return 0.5 * (1 + math.erf(mu / (sd * math.sqrt(2))))
 
 
 def _clamp(p: float, eps: float = 1e-3) -> float:
