@@ -117,7 +117,9 @@ def main():
     with open(out, "w") as f:
         json.dump({"dev_window": [DEV_START, DEV_END], "games": len(dev),
                    "sims": args.sims, "grid": results}, f, indent=2)
-    in_band = [r for r in results if 0.78 <= r["coverage"] <= 0.82]
+    # Gate band is [0.76, 0.84] (+/-2 SE at val n=343); at dev n=48 the SE is
+    # ~5.8pp, so closest-to-0.80 does the real work and the band just trims.
+    in_band = [r for r in results if 0.76 <= r["coverage"] <= 0.84]
     pick = min(in_band or results, key=lambda r: (abs(r["coverage"] - 0.80),
                                                   r["brier"]))
     print(f"\nbest: outcome={pick['outcome']} action={pick['action']} "
