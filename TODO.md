@@ -79,7 +79,11 @@ Single source of truth for project tasks. Architecture rationale lives in
     form): **65.9% picks / 0.2205 Brier / margin MAE 12.0, n=343**
     (results/backtest_baseline_2025-03-01.json). The old 60.9%/0.2357 was the
     2022-23 mid-season window — late-season form is stronger; compare like
-    for like.
+    for like. **RUN IN FLIGHT 2026-06-11 ~23:00**: 343 games x 200 sims via
+    test_scripts/backtest_transformer.py, log /tmp/backtest_tf.log, results
+    will land in results/backtest_transformer_2025-03-01.json — check, record
+    the verdict here, and note the conditioning asymmetry (transformer sees
+    the night's actual rosters/starters; baseline sees only team form).
 15. Re-run the statistical baseline's backtest split regular-season vs playoffs
     (current 673-game numbers in DESIGN.md mix both).
 16. **Counterfactual sanity suite**: swap in a rim protector -> opponent rim FG%

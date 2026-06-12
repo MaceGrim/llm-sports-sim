@@ -80,6 +80,9 @@ Open questions, in the order to resolve them:
 ## Status
 
 - 2026-06-11: directory created; pybaseball verified; one-week schema audit
-  done (`explore_statcast.py` output above); full-2024 pull started into the
-  pybaseball cache. Next: resolve the round-trip mismatch, then write
-  `encode_game` + `Replay` with the same exact-reconstruction contract as v2.
+  done (`explore_statcast.py` output above); round-trip mismatch diagnosed
+  (runs between pitches -> derive non-pitch events from state diffs); **full
+  2024 season pulled: 712,274 pitches in `statcast_2024.parquet`** (105MB,
+  gitignored, also in the pybaseball cache). Next: write `encode_game` +
+  `Replay` with the same exact-reconstruction contract as v2 — final score,
+  per-inning runs, and batter/pitcher box lines from tokens alone.
