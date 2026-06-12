@@ -98,10 +98,11 @@ def shot_stats(sim, away_set, home_set):
             continue
         shooter = sim[i - 1]
         if i + 2 < len(sim) and sim[i + 1].startswith("D:"):
-            dist, outcome = int(sim[i + 1][2:].rstrip("+")), sim[i + 2]
-            if dist <= 3 and not t.startswith("A:3pt") and shooter in away_set:
+            d = sim[i + 1][2:].rstrip("+")  # D:36+ caps; D:unk has no distance
+            if (d.isdigit() and int(d) <= 3 and not t.startswith("A:3pt")
+                    and shooter in away_set):
                 rim_att += 1
-                rim_made += outcome == "made"
+                rim_made += sim[i + 2] == "made"
         if t.startswith("A:3pt") and shooter in home_set:
             h3pa += 1
     return rim_att, rim_made, h3pa
