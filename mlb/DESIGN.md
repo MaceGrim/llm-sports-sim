@@ -47,35 +47,50 @@ Measured on 2024-06-05..11 (90 games, 26,422 pitches; `explore_statcast.py`):
 - **Token budget ~1,258/game** (PA header + ~3/pitch) — roomy. Pitch-level
   granularity preserved, full game in ~1.3k context.
 
-## Candidate grammar (to validate against a real encoder + round-trip)
+## Grammar (implemented in sim/tokenizer.py; round-trips all of 2024)
 
 ```
-[GAME] TEAM:away TEAM:home [LINEUP_A] B:... x9 [LINEUP_H] B:... x9
-per PA:    [PA] P:<pitcher> B:<batter>          (state machine deals batter;
-                                                 tokens needed only on change?)
-per pitch: T:<pitch_type> Z:<zone> R:<description>
-final:     E:<events> (+ bb:<type> + EV/LA buckets when hit into play)
+[GAME] TEAM:away TEAM:home
+[LINEUP_A] P: x9 batting order        [LINEUP_H] P: x9
+[BENCH_A] / [BENCH_H] P:...           later batters, alphabetical
+[PEN_A] / [PEN_H] P:starter P:...     starter first, relievers alphabetical
+[HALF]                                each half-inning, by count (Top 1, ...)
+per PA:    [PA] P:<pitcher> P:<batter>
+per pitch: T:<type> Z:<zone> R:<description>  (+ E:<events> on the last
+           pitch, + "+n" when runs score on the play)
+mid-PA:    [NEWP] P:x (pitching change, 58/season) | [NEWB] P:x (PH, 14)
+no-pitch:  [MID] +n  (runs between pitch rows, 54/season)
 inning/half/outs: deterministic -> state machine + channels, never tokens
 ```
+
+One deliberate deviation from the first sketch: a single `P:` namespace
+instead of `B:`/`P:` — one player, one token, one embedding (a two-way
+player would otherwise split in half; pitcher/batter role is positional in
+the `[PA]` header).
 
 Open questions, in the order to resolve them:
 
 1. ~~Round-trip mismatch~~ DIAGNOSED 2026-06-11: both failing games have a
    run scoring *between* pitch rows (balk-type events with a runner on third
    — the between-row score jump appears in no pitch's bat_score delta). Not a
-   data bug; pitch-level deltas are simply incomplete.
-2. Baserunning/steals/wild pitches: per #1, non-pitch events (SB, CS, balk,
-   pickoff, scoring plays between pitches) must be **derived from
-   between-row state diffs** — score, bases, outs — and emitted as explicit
-   tokens, exactly v2's sub-derivation lesson (trust state columns over
-   event labels). The encoder's round-trip contract then covers them.
-3. Batter identity is an MLB ID int — map to names via pybaseball's
-   playerid_reverse_lookup for readable tokens (v2's readability principle).
+   data bug; pitch-level deltas are simply incomplete. RESOLVED 2026-06-12:
+   `[MID] +n` tokens derived from between-row jumps in the absolute score
+   columns; the scoring side identifies the half the run belongs to (the
+   fielding team never scores — 0 rows in 2024).
+2. ~~Names~~ DONE 2026-06-12: pybaseball's playerid_reverse_lookup, cached
+   in cache/players.json; five colliding names (two Will Smiths, ...) get an
+   ID suffix so one token never means two players.
+3. **Outs/bases for state channels**: grammar v1 carries runs but not
+   baserunner advancement, so the replay can reconstruct score and innings
+   but not outs or base occupancy. Training channels (count, outs, bases)
+   need either advancement tokens (out-delta + post-play base state per PA,
+   from between-row diffs of on_1b/2b/3b and outs_when_up) or channels
+   computed from rows at encode time. Decide when training starts; count
+   (balls/strikes) is already derivable from R: tokens alone.
 4. Pitcher fatigue: pitch count is derivable; `n_thruorder_pitcher` is on-row.
    Channel or token? (Channel, probably — same as score.)
-5. Season scope: start with 2024 (one season, ~700k pitches ≈ 3M tokens —
-   between v2's single-season 2.8M and six-season 16M), add 2015-2023 after
-   the pipeline round-trips.
+5. Season scope: start with 2024 (3.0M tokens — between v2's single-season
+   2.8M and six-season 16M), add 2015-2023 after the pipeline round-trips.
 
 ## Status
 
@@ -83,6 +98,15 @@ Open questions, in the order to resolve them:
   done (`explore_statcast.py` output above); round-trip mismatch diagnosed
   (runs between pitches -> derive non-pitch events from state diffs); **full
   2024 season pulled: 712,274 pitches in `statcast_2024.parquet`** (105MB,
-  gitignored, also in the pybaseball cache). Next: write `encode_game` +
-  `Replay` with the same exact-reconstruction contract as v2 — final score,
-  per-inning runs, and batter/pitcher box lines from tokens alone.
+  gitignored, also in the pybaseball cache).
+- 2026-06-12: `encode_game` + `Replay` landed (sim/tokenizer.py, sim/data.py,
+  run.py mirroring v2's layout). **Round-trip: 2,427/2,427 regular-season
+  games exact, zero waivers** — final score, per-half-inning runs, batter
+  lines (PA/H/HR/BB/K) and pitcher lines (BF/H/BB/K) from tokens alone,
+  verified against parquet-derived truth (`python run.py tokenize`). Tokens:
+  mean 1,243/game, p95 1,475, max 1,873; corpus 3,017,808; vocab 1,570.
+  Tests in tests/test_tokenizer.py (handcrafted grammar sequence + the
+  [MID]-straddle game 747004 pinned). Next: training — reuse v2's EventGPT/
+  KVCache by import, settle open question #3 (outs/bases channels), then
+  the sampler state machine (deal batters from the lineup, force [HALF] at
+  three outs).

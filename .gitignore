@@ -3,6 +3,7 @@ nba_data/
 
 # Derived artifacts (rebuildable from data)
 v2/cache/
+mlb/cache/
 v2/results/
 *.pt
 

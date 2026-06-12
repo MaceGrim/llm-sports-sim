@@ -86,12 +86,31 @@ Single source of truth for project tasks. Architecture rationale lives in
     the night's actual rosters/starters; baseline sees only team form).
 15. Re-run the statistical baseline's backtest split regular-season vs playoffs
     (current 673-game numbers in DESIGN.md mix both).
+15b. **Player-form baseline** (Mason, 2026-06-11): the team-form baseline never
+    uses player form to predict the score (only to decorate box lines), and it
+    doesn't see the night's rosters — but the transformer does, so a win could
+    be dismissed as roster knowledge, not modeling. Add a baseline that takes
+    the same header (actual actives/starters), projects mpg-weighted player
+    season-to-date scoring vs opponent defense, and sums. The three-way gap
+    decomposes the transformer's edge into roster-information value vs
+    learned-simulation value — the second number is the Sloan headline.
 16. **Counterfactual sanity suite**: swap in a rim protector -> opponent rim FG%
     drops; five centers -> fails; rest a star -> team output drops. Validates
     the roster-fit use case.
 17. Per-slot sampling temperature calibration to hit ~80% margin coverage.
 18. User-facing `simulate(roster_a, roster_b)` CLI (sampler already supports
     arbitrary rosters internally).
+
+## MLB twin (mlb/ — see mlb/DESIGN.md for design + status)
+
+22. ~~Statcast encoder + replay with v2's round-trip contract~~ DONE
+    2026-06-12 — 2,427/2,427 games of 2024 exact, zero waivers (score,
+    per-half runs, batter/pitcher box lines from tokens alone). 3.0M-token
+    corpus, vocab 1,570.
+23. MLB training run: reuse v2's EventGPT/KVCache by import (don't copy);
+    decide outs/bases channels first (mlb/DESIGN.md open question #3).
+24. MLB sampler state machine: deal batters from the lineup, force [HALF]
+    at three outs, legality-mask players to the game header.
 
 ## Admin / Sloan
 
